@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<FictionBook xmlns="http://www.gribuser.ru/xml/fictionbook/2.0" xmlns:l="http://www.w3.org/1999/xlink">
+  <description><title-info><book-title>ReadArc FB2 fixture</book-title></title-info></description>
+  <body>
+    <section>
+      <title><p>Глава первая</p></title>
+      <p>Первый абзац FB2 с <strong>жирным</strong> фрагментом.</p>
+      <p>Второй абзац нужен для восстановления locator.</p>
+    </section>
+  </body>
+</FictionBook>

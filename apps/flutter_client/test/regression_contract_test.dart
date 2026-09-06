@@ -7,7 +7,12 @@ String _read(String relativePath) => File(relativePath).readAsStringSync();
 void main() {
   group('ReadArc regression contracts', () {
     test('active product code never falls back to ReadAnywhere', () {
-      final roots = <String>['../../scripts/prepare_flutter_platforms.sh', 'lib/main.dart', 'pubspec.yaml'];
+      final roots = <String>[
+        '../../scripts/prepare_flutter_platforms.sh',
+        'lib/main.dart',
+        'lib/app/readarc_app.dart',
+        'pubspec.yaml',
+      ];
       final forbidden = RegExp(r'ReadAnywhere|Read Anywhere|readanywhere|read-anywhere|read_anywhere|READANYWHERE');
       final offenders = <String>[];
       for (final path in roots) {
@@ -20,7 +25,7 @@ void main() {
 
     test('QR scanner stays on the known working backend', () {
       final pubspec = _read('pubspec.yaml');
-      final main = _read('lib/main.dart');
+      final main = _read('lib/app/readarc_app.dart');
       expect(pubspec, contains('qr_code_scanner_plus:'));
       expect(main, contains("package:qr_code_scanner_plus/qr_code_scanner_plus.dart"));
       expect(pubspec, isNot(contains('mobile_scanner:')));
@@ -46,7 +51,7 @@ void main() {
     });
 
     test('pairing UI remains six-digit-code based', () {
-      final main = _read('lib/main.dart');
+      final main = _read('lib/app/readarc_app.dart');
       expect(main, contains('Создать код подключения'));
       expect(main, contains('Показать QR'));
       expect(main, contains('Введите код приглашения'));
@@ -54,13 +59,13 @@ void main() {
     });
 
     test('library download paths remain guarded by relay connectivity', () {
-      final main = _read('lib/main.dart');
+      final main = _read('lib/app/readarc_app.dart');
       expect(main, contains("if (!widget.sync.state.value.connected)"));
       expect(main, contains('Нет подключения к relay.'));
     });
 
     test('critical reader routes remain registered', () {
-      final main = _read('lib/main.dart');
+      final main = _read('lib/app/readarc_app.dart');
       for (final extension in ['pdf', 'djvu', 'epub', 'fb2', 'txt', 'docx', 'doc']) {
         expect(main, contains("case '$extension':"), reason: 'Reader route for .$extension disappeared');
       }

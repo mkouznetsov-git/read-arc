@@ -171,7 +171,8 @@ See also: `docs/adr_002_internet_sync_and_format_scope.md`.
 - `lib/services/sync/relay_client.dart` — WebSocket transport;
 - `lib/services/sync/merge.dart` — merge правил;
 - `lib/models/book.dart` — `availableOnDeviceIds` и локальный `localPath`;
-- `lib/main.dart` — экран синхронизации и вызовы broadcast после изменений.
+- `lib/main.dart` — минимальная точка входа; application shell и экраны находятся в
+  `lib/app/readarc_app.dart`, форматные reader adapters — в `lib/reader/`.
 
 Текущее решение сознательно не является финальной безопасной синхронизацией. Оно нужно для ранней проверки пользовательского сценария через интернет. Следующий этап: QR-pairing, device keys, подпись событий, E2E encryption и offline queue.
 

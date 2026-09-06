@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>
+    <w:p><w:pPr><w:outlineLvl w:val="0"/></w:pPr><w:r><w:b/><w:t>DOCX fixture heading</w:t></w:r></w:p>
+    <w:p><w:r><w:t>First DOCX paragraph with stable semantic text.</w:t></w:r></w:p>
+    <w:tbl><w:tblGrid><w:gridCol w:w="2400"/><w:gridCol w:w="2400"/></w:tblGrid><w:tr><w:tc><w:p><w:r><w:b/><w:t>Column A</w:t></w:r></w:p></w:tc><w:tc><w:p><w:r><w:i/><w:t>Column B</w:t></w:r></w:p></w:tc></w:tr><w:tr><w:tc><w:p><w:r><w:t>Value 1</w:t></w:r></w:p></w:tc><w:tc><w:p><w:r><w:t>Value 2</w:t></w:r></w:p></w:tc></w:tr></w:tbl>
+    <w:p><w:r><w:br w:type="page"/><w:t>Second page locator target.</w:t></w:r></w:p>
+    <w:sectPr><w:pgSz w:w="11906" w:h="16838"/><w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440"/></w:sectPr>
+  </w:body>
+</w:document>

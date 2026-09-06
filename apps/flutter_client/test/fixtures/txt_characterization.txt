@@ -1,0 +1,5 @@
+ReadArc TXT fixture
+
+Первый абзац проверяет сохранение структуры обычного текста.
+
+Second paragraph keeps a stable locator after reopening the document.
