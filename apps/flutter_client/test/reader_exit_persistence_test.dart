@@ -34,8 +34,7 @@ void main() {
     expect(find.text('PDF page 2'), findsOneWidget);
 
     await tester.binding.handlePopRoute();
-    await tester.pump();
-    await tester.pump(const Duration(milliseconds: 300));
+    await tester.pumpAndSettle();
     expect(find.text('Open PDF'), findsOneWidget);
 
     final locator = jsonDecode(persistedLocator!) as Map<String, dynamic>;

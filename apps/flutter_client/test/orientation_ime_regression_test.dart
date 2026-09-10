@@ -29,9 +29,11 @@ void main() {
         home: SyncScreen(storage: storage, sync: sync),
       ),
     );
-    await tester.pumpAndSettle();
 
     final pairingField = find.byType(TextField);
+    for (var attempt = 0; attempt < 20 && pairingField.evaluate().isEmpty; attempt += 1) {
+      await tester.pump(const Duration(milliseconds: 100));
+    }
     expect(pairingField, findsOneWidget);
     await tester.enterText(pairingField, '123456');
     tester.view.viewInsets = const FakeViewPadding(bottom: 180);
