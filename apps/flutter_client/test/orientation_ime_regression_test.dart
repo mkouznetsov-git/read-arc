@@ -15,15 +15,11 @@ void main() {
     tester.view.devicePixelRatio = 1;
     tester.view.physicalSize = const Size(800, 360);
 
-    addTearDown(() async {
-      await tester.pumpWidget(const SizedBox.shrink());
+    addTearDown(() {
       tester.view.resetViewInsets();
       tester.view.resetPhysicalSize();
       tester.view.resetDevicePixelRatio();
-      await tester.runAsync(() async {
-        await sync.dispose();
-        if (await directory.exists()) await directory.delete(recursive: true);
-      });
+      if (directory.existsSync()) directory.deleteSync(recursive: true);
     });
 
     await tester.pumpWidget(
