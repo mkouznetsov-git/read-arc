@@ -19,6 +19,7 @@ import 'package:url_launcher/url_launcher.dart';
 import '../models/book.dart';
 import '../models/manifest.dart';
 import '../models/sync_settings.dart';
+import '../reader/reader_exit_checkpoint.dart';
 import '../services/book_import_service.dart';
 import '../services/format_engines/djvu_embedded_engine.dart';
 import '../services/format_engines/djvu_embedded_probe.dart';
@@ -738,6 +739,7 @@ class _TxtReaderScreenState extends State<_TxtReaderScreen> {
   _TextAnchorLocator? _lastKnownLocator;
   bool _fullScreen = false;
   bool _textProgressScrubActive = false;
+  bool _exitProgressCommitted = false;
 
   BookRecord get _book => _runtimeBook ?? widget.book;
 
@@ -763,7 +765,7 @@ class _TxtReaderScreenState extends State<_TxtReaderScreen> {
     _saveDebounce?.cancel();
     _progressRedrawThrottle?.cancel();
     final locator = _currentLocator() ?? _lastKnownLocator;
-    if (locator != null) {
+    if (!_exitProgressCommitted && locator != null) {
       unawaited(_saveProgress(locator));
     }
     _scrollController.removeListener(_onScrollPositionChanged);
@@ -1037,6 +1039,14 @@ class _TxtReaderScreenState extends State<_TxtReaderScreen> {
     await widget.sync.broadcastLibrarySnapshot(reason: 'progress_updated');
   }
 
+  Future<void> _commitProgressBeforePop() async {
+    _saveDebounce?.cancel();
+    final locator = _currentLocator() ?? _lastKnownLocator;
+    if (locator == null) return;
+    await _saveProgress(locator);
+    _exitProgressCommitted = true;
+  }
+
   Future<void> _addBookmark() async {
     final locator = _currentLocator();
     await widget.storage.addBookmark(
@@ -1053,7 +1063,7 @@ class _TxtReaderScreenState extends State<_TxtReaderScreen> {
   Widget build(BuildContext context) {
     final raw = _rawText;
     final lines = _lines;
-    return Scaffold(
+    final scaffold = Scaffold(
       backgroundColor: const Color(0xFFF3E7CF),
       appBar: _fullScreen
           ? null
@@ -1170,6 +1180,7 @@ class _TxtReaderScreenState extends State<_TxtReaderScreen> {
               ],
             ),
     );
+    return ReaderExitCheckpoint(onCommit: _commitProgressBeforePop, child: scaffold);
   }
 }
 
@@ -1196,6 +1207,7 @@ class _DocxReaderScreenState extends State<_DocxReaderScreen> {
   Timer? _saveDebounce;
   Timer? _redrawThrottle;
   double _progress = 0;
+  bool _exitProgressCommitted = false;
 
   BookRecord get _book => _runtimeBook ?? widget.book;
 
@@ -1212,7 +1224,7 @@ class _DocxReaderScreenState extends State<_DocxReaderScreen> {
     _parseOperation.cancel();
     _saveDebounce?.cancel();
     _redrawThrottle?.cancel();
-    if (_document != null) {
+    if (!_exitProgressCommitted && _document != null) {
       final progress = _currentProgress();
       unawaited(_saveProgress(progress));
     }
@@ -1345,6 +1357,13 @@ class _DocxReaderScreenState extends State<_DocxReaderScreen> {
     await widget.sync.broadcastLibrarySnapshot(reason: 'docx_progress_updated');
   }
 
+  Future<void> _commitProgressBeforePop() async {
+    _saveDebounce?.cancel();
+    if (_document == null) return;
+    await _saveProgress(_currentProgress());
+    _exitProgressCommitted = true;
+  }
+
   Future<void> _copyAll() async {
     final doc = _document;
     if (doc == null) return;
@@ -1373,7 +1392,7 @@ class _DocxReaderScreenState extends State<_DocxReaderScreen> {
   @override
   Widget build(BuildContext context) {
     final document = _document;
-    return Scaffold(
+    final scaffold = Scaffold(
       backgroundColor: const Color(0xFFF3E7CF),
       appBar: _fullScreen
           ? null
@@ -1454,6 +1473,7 @@ class _DocxReaderScreenState extends State<_DocxReaderScreen> {
               ],
             ),
     );
+    return ReaderExitCheckpoint(onCommit: _commitProgressBeforePop, child: scaffold);
   }
 }
 
@@ -2244,6 +2264,7 @@ class _Fb2ReaderScreenState extends State<_Fb2ReaderScreen> {
   bool _didInitialRestore = false;
   bool _fullScreen = false;
   bool _richProgressScrubActive = false;
+  bool _exitProgressCommitted = false;
 
   BookRecord get _book => _runtimeBook ?? widget.book;
 
@@ -2262,7 +2283,9 @@ class _Fb2ReaderScreenState extends State<_Fb2ReaderScreen> {
     _saveDebounce?.cancel();
     _progressRedrawThrottle?.cancel();
     final locator = _lastKnownLocator ?? _currentLocator();
-    if (locator != null) unawaited(_saveProgress(locator));
+    if (!_exitProgressCommitted && locator != null) {
+      unawaited(_saveProgress(locator));
+    }
     _scrollController.removeListener(_onScroll);
     _scrollController.dispose();
     super.dispose();
@@ -2607,6 +2630,14 @@ class _Fb2ReaderScreenState extends State<_Fb2ReaderScreen> {
     await widget.sync.broadcastLibrarySnapshot(reason: 'progress_updated');
   }
 
+  Future<void> _commitProgressBeforePop() async {
+    _saveDebounce?.cancel();
+    final locator = _currentLocator() ?? _lastKnownLocator;
+    if (locator == null) return;
+    await _saveProgress(locator);
+    _exitProgressCommitted = true;
+  }
+
   Future<void> _addBookmark() async {
     final locator = _currentLocator();
     await widget.storage.addBookmark(
@@ -2723,7 +2754,7 @@ class _Fb2ReaderScreenState extends State<_Fb2ReaderScreen> {
   Widget build(BuildContext context) {
     final document = _document;
     final units = _units;
-    return Scaffold(
+    final scaffold = Scaffold(
       backgroundColor: const Color(0xFFF3E7CF),
       appBar: _fullScreen
           ? null
@@ -2835,6 +2866,7 @@ class _Fb2ReaderScreenState extends State<_Fb2ReaderScreen> {
               ],
             ),
     );
+    return ReaderExitCheckpoint(onCommit: _commitProgressBeforePop, child: scaffold);
   }
 }
 
@@ -5093,6 +5125,7 @@ class _DjvuReaderScreenState extends State<_DjvuReaderScreen> {
   bool _restoringScroll = false;
   double _lastViewportWidth = 0;
   Timer? _saveDebounce;
+  bool _exitProgressCommitted = false;
 
   BookRecord get _book => _runtimeBook ?? widget.book;
 
@@ -5106,6 +5139,9 @@ class _DjvuReaderScreenState extends State<_DjvuReaderScreen> {
   @override
   void dispose() {
     _saveDebounce?.cancel();
+    if (!_exitProgressCommitted && _pageCount > 0) {
+      unawaited(_savePage(_page));
+    }
     _scrollController.removeListener(_onScroll);
     _scrollController.dispose();
     super.dispose();
@@ -5257,6 +5293,13 @@ class _DjvuReaderScreenState extends State<_DjvuReaderScreen> {
     await widget.sync.broadcastLibrarySnapshot(reason: 'djvu_progress_updated');
   }
 
+  Future<void> _commitProgressBeforePop() async {
+    _saveDebounce?.cancel();
+    if (_pageCount <= 0) return;
+    await _savePage(_page);
+    _exitProgressCommitted = true;
+  }
+
   Future<void> _addBookmark() async {
     await widget.storage.addBookmark(
       bookId: widget.book.id,
@@ -5302,7 +5345,7 @@ class _DjvuReaderScreenState extends State<_DjvuReaderScreen> {
   Widget build(BuildContext context) {
     final source = _sourceFile;
     final pagesDir = _pagesDir;
-    return Scaffold(
+    final scaffold = Scaffold(
       backgroundColor: const Color(0xFFF3E7CF),
       appBar: _fullScreen
           ? null
@@ -5400,6 +5443,7 @@ class _DjvuReaderScreenState extends State<_DjvuReaderScreen> {
               ],
             ),
     );
+    return ReaderExitCheckpoint(onCommit: _commitProgressBeforePop, child: scaffold);
   }
 }
 
@@ -5956,6 +6000,7 @@ class _PdfReaderScreenState extends State<_PdfReaderScreen> {
   bool _pdfProgressScrubActive = false;
   bool _openPdfPageAtBottom = false;
   double _lastViewportWidth = 0;
+  bool _exitProgressCommitted = false;
 
   BookRecord get _book => _runtimeBook ?? widget.book;
 
@@ -5970,6 +6015,9 @@ class _PdfReaderScreenState extends State<_PdfReaderScreen> {
   void dispose() {
     _saveDebounce?.cancel();
     _scrollRedrawThrottle?.cancel();
+    if (!_exitProgressCommitted && _pages > 0) {
+      unawaited(_savePage(_page));
+    }
     _scrollController.removeListener(_onPdfScroll);
     _scrollController.dispose();
     final document = _document;
@@ -6107,6 +6155,13 @@ class _PdfReaderScreenState extends State<_PdfReaderScreen> {
     await widget.sync.broadcastLibrarySnapshot(reason: 'pdf_progress_updated');
   }
 
+  Future<void> _commitProgressBeforePop() async {
+    _saveDebounce?.cancel();
+    if (_pages <= 0) return;
+    await _savePage(_page);
+    _exitProgressCommitted = true;
+  }
+
   Future<void> _addBookmark() async {
     await widget.storage.addBookmark(
       bookId: widget.book.id,
@@ -6168,7 +6223,7 @@ class _PdfReaderScreenState extends State<_PdfReaderScreen> {
   @override
   Widget build(BuildContext context) {
     final document = _document;
-    return Scaffold(
+    final scaffold = Scaffold(
       backgroundColor: const Color(0xFFF3E7CF),
       appBar: _fullScreen
           ? null
@@ -6260,6 +6315,7 @@ class _PdfReaderScreenState extends State<_PdfReaderScreen> {
               ],
             ),
     );
+    return ReaderExitCheckpoint(onCommit: _commitProgressBeforePop, child: scaffold);
   }
 }
 
@@ -8375,30 +8431,34 @@ class _SyncScreenState extends State<SyncScreen> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Row(
-                      children: [
-                        Expanded(
-                          child: FilledButton.icon(
-                            onPressed: _pairingBusy ? null : _showPairingQrCode,
-                            icon: _pairingBusy
-                                ? const SizedBox(
-                                    width: 18,
-                                    height: 18,
-                                    child: CircularProgressIndicator(strokeWidth: 2),
-                                  )
-                                : const Icon(Icons.qr_code_2_rounded),
-                            label: const Text('Показать QR'),
-                          ),
-                        ),
-                        const SizedBox(width: 12),
-                        Expanded(
-                          child: OutlinedButton.icon(
-                            onPressed: _pairingBusy ? null : _createPairingInvite,
-                            icon: const Icon(Icons.pin_rounded),
-                            label: const Text('Создать код подключения'),
-                          ),
-                        ),
-                      ],
+                    LayoutBuilder(
+                      builder: (context, constraints) {
+                        final showQrButton = FilledButton.icon(
+                          onPressed: _pairingBusy ? null : _showPairingQrCode,
+                          icon: _pairingBusy
+                              ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
+                              : const Icon(Icons.qr_code_2_rounded),
+                          label: const Text('Показать QR'),
+                        );
+                        final createCodeButton = OutlinedButton.icon(
+                          onPressed: _pairingBusy ? null : _createPairingInvite,
+                          icon: const Icon(Icons.pin_rounded),
+                          label: const Text('Создать код подключения'),
+                        );
+                        if (constraints.maxWidth < 520) {
+                          return Column(
+                            crossAxisAlignment: CrossAxisAlignment.stretch,
+                            children: [showQrButton, const SizedBox(height: 12), createCodeButton],
+                          );
+                        }
+                        return Row(
+                          children: [
+                            Expanded(child: showQrButton),
+                            const SizedBox(width: 12),
+                            Expanded(child: createCodeButton),
+                          ],
+                        );
+                      },
                     ),
                     if (_pairingInvite != null) ...[
                       const SizedBox(height: 16),

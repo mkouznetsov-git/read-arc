@@ -98,5 +98,29 @@ void main() {
         expect(main, contains("case '$extension':"), reason: 'Reader route for .$extension disappeared');
       }
     });
+
+    test('stateful readers checkpoint current progress before system Back completes', () {
+      final main = _read('lib/app/readarc_app.dart');
+      for (final state in [
+        '_TxtReaderScreenState',
+        '_DocxReaderScreenState',
+        '_Fb2ReaderScreenState',
+        '_DjvuReaderScreenState',
+        '_PdfReaderScreenState',
+      ]) {
+        final body = RegExp('class ${RegExp.escape(state)}[\\s\\S]*?(?=\\nclass )').firstMatch(main)?.group(0);
+        expect(body, isNotNull, reason: '$state disappeared');
+        expect(
+          body,
+          contains('ReaderExitCheckpoint(onCommit: _commitProgressBeforePop'),
+          reason: '$state no longer waits for its durable exit checkpoint',
+        );
+      }
+
+      for (final state in ['_DjvuReaderScreenState', '_PdfReaderScreenState']) {
+        final body = RegExp('class ${RegExp.escape(state)}[\\s\\S]*?(?=\\nclass )').firstMatch(main)?.group(0);
+        expect(body, contains('unawaited(_savePage(_page))'), reason: '$state lost its non-pop disposal fallback');
+      }
+    });
   });
 }

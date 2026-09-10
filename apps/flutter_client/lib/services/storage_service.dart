@@ -29,6 +29,7 @@ class StorageService {
   final LibrarySecretStore? _secretStore;
   final Future<Directory> Function()? _appDirectoryOverride;
   LibraryRepository? _repositoryInstance;
+  Future<Directory>? _appDirFuture;
 
   LibraryRepository get repository =>
       _repositoryOverride ??
@@ -39,7 +40,9 @@ class StorageService {
         normalize: _normalizeManifest,
       ));
 
-  Future<Directory> appDir() async {
+  Future<Directory> appDir() => _appDirFuture ??= _resolveAppDir();
+
+  Future<Directory> _resolveAppDir() async {
     final appDirectoryOverride = _appDirectoryOverride;
     if (appDirectoryOverride != null) {
       final directory = await appDirectoryOverride();
@@ -51,7 +54,8 @@ class StorageService {
       return (await repositoryOverride.manifestFile).parent;
     }
     // Canonical ReadArc data directory. Keep it stable so app updates do not
-    // erase an existing development/test library.
+    // erase an existing development/test library. Resolve/migrate it once per
+    // StorageService so parallel cold-start consumers share the same I/O path.
     final documents = await getApplicationDocumentsDirectory();
     final appDirectory = Directory(p.join(documents.path, 'ReadArc'));
     await _restoreAppDataIfPrimaryIsEmpty(appDirectory, documents.path);

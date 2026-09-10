@@ -5,6 +5,7 @@ import 'dart:typed_data';
 import 'package:web_socket_channel/web_socket_channel.dart';
 
 import '../../models/manifest.dart';
+import 'relay_lifecycle_guard.dart';
 
 class RelayBinaryMessage {
   const RelayBinaryMessage({required this.header, required this.body});
@@ -155,10 +156,21 @@ class RelayClient {
   }
 
   Future<void> close() async {
-    await _subscription?.cancel();
+    final subscription = _subscription;
     _subscription = null;
-    await _channel?.sink.close();
+    final channel = _channel;
     _channel = null;
+
+    final cleanup = <Future<void>>[
+      if (subscription != null) subscription.cancel(),
+      if (channel != null) channel.sink.close(),
+    ];
+    if (cleanup.isEmpty) return;
+
+    // After macOS wakes from sleep the old websocket can be half-open forever.
+    // Cleanup is best effort: detach it immediately and never let it block the
+    // next relay health probe/reconnect attempt.
+    await waitForRelayCleanup(Future.wait(cleanup));
   }
 
   Future<void> dispose() async {
