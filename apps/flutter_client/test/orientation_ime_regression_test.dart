@@ -45,7 +45,7 @@ void main() {
     await tester.scrollUntilVisible(
       find.text('Подключиться по коду'),
       120,
-      scrollable: find.byType(ListView),
+      scrollable: find.byType(Scrollable).first,
       maxScrolls: 10,
     );
     await tester.pump(const Duration(milliseconds: 300));
