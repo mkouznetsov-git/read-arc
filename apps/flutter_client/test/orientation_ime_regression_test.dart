@@ -9,6 +9,7 @@ import 'package:readarc/services/sync/sync_service.dart';
 
 void main() {
   testWidgets('pairing code survives landscape IME open, close and portrait restore without overflow', (tester) async {
+    debugPrint('IME regression: create fixture');
     final directory = await Directory.systemTemp.createTemp('readarc-orientation-ime-');
     final storage = StorageService(appDirectory: () async => directory, secretStore: _MemorySecretStore());
     final sync = SyncService(storage);
@@ -16,38 +17,46 @@ void main() {
     tester.view.physicalSize = const Size(800, 360);
 
     addTearDown(() {
+      debugPrint('IME regression: tear down fixture');
       tester.view.resetViewInsets();
       tester.view.resetPhysicalSize();
       tester.view.resetDevicePixelRatio();
       if (directory.existsSync()) directory.deleteSync(recursive: true);
     });
 
+    debugPrint('IME regression: pump SyncScreen');
     await tester.pumpWidget(
       MaterialApp(
         home: SyncScreen(storage: storage, sync: sync),
       ),
     );
+    debugPrint('IME regression: wait for pairing field');
 
     final pairingField = find.byType(TextField);
     for (var attempt = 0; attempt < 20 && pairingField.evaluate().isEmpty; attempt += 1) {
       await tester.pump(const Duration(milliseconds: 100));
     }
+    debugPrint('IME regression: enter pairing code');
     expect(pairingField, findsOneWidget);
     await tester.enterText(pairingField, '123456');
+    debugPrint('IME regression: open IME');
     tester.view.viewInsets = const FakeViewPadding(bottom: 180);
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 300));
+    debugPrint('IME regression: reveal connect action');
     await tester.ensureVisible(find.text('Подключиться по коду'));
     await tester.pump(const Duration(milliseconds: 300));
     expect(tester.takeException(), isNull);
 
+    debugPrint('IME regression: restore portrait');
     tester.view.resetViewInsets();
     tester.view.physicalSize = const Size(360, 800);
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 300));
     expect(find.text('123456'), findsOneWidget);
     expect(tester.takeException(), isNull);
-  });
+    debugPrint('IME regression: assertions complete');
+  }, timeout: const Timeout(Duration(seconds: 30)));
 }
 
 class _MemorySecretStore implements LibrarySecretStore {
