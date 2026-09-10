@@ -20,8 +20,10 @@ void main() {
       tester.view.resetViewInsets();
       tester.view.resetPhysicalSize();
       tester.view.resetDevicePixelRatio();
-      await sync.dispose();
-      if (await directory.exists()) await directory.delete(recursive: true);
+      await tester.runAsync(() async {
+        await sync.dispose();
+        if (await directory.exists()) await directory.delete(recursive: true);
+      });
     });
 
     await tester.pumpWidget(
