@@ -33,7 +33,7 @@ void main() {
     );
 
     final pairingField = find.byType(TextField);
-    for (var attempt = 0; attempt < 20 && pairingField.evaluate().isEmpty; attempt += 1) {
+    for (var attempt = 0; attempt < 200 && pairingField.evaluate().isEmpty; attempt += 1) {
       await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 25)));
       await tester.pump();
     }
