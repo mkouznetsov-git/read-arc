@@ -8431,30 +8431,34 @@ class _SyncScreenState extends State<SyncScreen> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Row(
-                      children: [
-                        Expanded(
-                          child: FilledButton.icon(
-                            onPressed: _pairingBusy ? null : _showPairingQrCode,
-                            icon: _pairingBusy
-                                ? const SizedBox(
-                                    width: 18,
-                                    height: 18,
-                                    child: CircularProgressIndicator(strokeWidth: 2),
-                                  )
-                                : const Icon(Icons.qr_code_2_rounded),
-                            label: const Text('Показать QR'),
-                          ),
-                        ),
-                        const SizedBox(width: 12),
-                        Expanded(
-                          child: OutlinedButton.icon(
-                            onPressed: _pairingBusy ? null : _createPairingInvite,
-                            icon: const Icon(Icons.pin_rounded),
-                            label: const Text('Создать код подключения'),
-                          ),
-                        ),
-                      ],
+                    LayoutBuilder(
+                      builder: (context, constraints) {
+                        final showQrButton = FilledButton.icon(
+                          onPressed: _pairingBusy ? null : _showPairingQrCode,
+                          icon: _pairingBusy
+                              ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
+                              : const Icon(Icons.qr_code_2_rounded),
+                          label: const Text('Показать QR'),
+                        );
+                        final createCodeButton = OutlinedButton.icon(
+                          onPressed: _pairingBusy ? null : _createPairingInvite,
+                          icon: const Icon(Icons.pin_rounded),
+                          label: const Text('Создать код подключения'),
+                        );
+                        if (constraints.maxWidth < 520) {
+                          return Column(
+                            crossAxisAlignment: CrossAxisAlignment.stretch,
+                            children: [showQrButton, const SizedBox(height: 12), createCodeButton],
+                          );
+                        }
+                        return Row(
+                          children: [
+                            Expanded(child: showQrButton),
+                            const SizedBox(width: 12),
+                            Expanded(child: createCodeButton),
+                          ],
+                        );
+                      },
                     ),
                     if (_pairingInvite != null) ...[
                       const SizedBox(height: 16),
