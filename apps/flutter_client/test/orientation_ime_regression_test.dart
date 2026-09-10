@@ -42,7 +42,12 @@ void main() {
     tester.view.viewInsets = const FakeViewPadding(bottom: 180);
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 300));
-    await tester.ensureVisible(find.text('Подключиться по коду'));
+    await tester.scrollUntilVisible(
+      find.text('Подключиться по коду'),
+      120,
+      scrollable: find.byType(ListView),
+      maxScrolls: 10,
+    );
     await tester.pump(const Duration(milliseconds: 300));
     expect(tester.takeException(), isNull);
 
