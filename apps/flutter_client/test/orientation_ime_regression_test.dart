@@ -34,7 +34,8 @@ void main() {
 
     final pairingField = find.byType(TextField);
     for (var attempt = 0; attempt < 20 && pairingField.evaluate().isEmpty; attempt += 1) {
-      await tester.pump(const Duration(milliseconds: 100));
+      await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 25)));
+      await tester.pump();
     }
     expect(pairingField, findsOneWidget);
     await tester.enterText(pairingField, '123456');
