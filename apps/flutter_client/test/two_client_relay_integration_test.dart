@@ -149,6 +149,7 @@ void main() {
       expect(await syncB.requestBookFile(requested), isTrue);
 
       final partial = File('${clientBData.path}/incoming/$hash.part');
+      final journal = File('${clientBData.path}/incoming/$hash.transfer.json');
       await _waitFor(
         () async =>
             injected && !syncB.state.value.connected && await partial.exists() && await partial.length() == chunkSize,
@@ -166,14 +167,14 @@ void main() {
       await _waitFor(() async {
         final book = (await storageB.loadManifest()).books.single;
         if (!book.isDownloaded) return false;
-        return await (await storageB.materializeBook(book)).exists();
+        return await (await storageB.materializeBook(book)).exists() && !await journal.exists();
       }, timeout: const Duration(seconds: 15));
 
       final completed = (await storageB.loadManifest()).books.single;
       final receivedBytes = await (await storageB.materializeBook(completed)).readAsBytes();
       expect(receivedBytes, bytes);
       expect(sha256.convert(receivedBytes).toString(), hash);
-      expect(await File('${clientBData.path}/incoming/$hash.transfer.json').exists(), isFalse);
+      expect(await journal.exists(), isFalse);
     } finally {
       await syncA.dispose();
       await syncB.dispose();
