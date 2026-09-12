@@ -148,7 +148,7 @@ void main() {
       final requested = (await storageB.loadManifest()).books.single;
       expect(await syncB.requestBookFile(requested), isTrue);
 
-      final partial = File('${clientBData.path}/incoming/book.part');
+      final partial = File('${clientBData.path}/incoming/$hash.part');
       await _waitFor(
         () async =>
             injected && !syncB.state.value.connected && await partial.exists() && await partial.length() == chunkSize,
@@ -173,7 +173,7 @@ void main() {
       final receivedBytes = await (await storageB.materializeBook(completed)).readAsBytes();
       expect(receivedBytes, bytes);
       expect(sha256.convert(receivedBytes).toString(), hash);
-      expect(await File('${clientBData.path}/incoming/book.transfer.json').exists(), isFalse);
+      expect(await File('${clientBData.path}/incoming/$hash.transfer.json').exists(), isFalse);
     } finally {
       await syncA.dispose();
       await syncB.dispose();
