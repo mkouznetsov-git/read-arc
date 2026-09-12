@@ -97,6 +97,8 @@ class BookRecord {
     required this.sizeBytes,
     required this.contentSha256,
     this.localPath,
+    this.relativeLocation,
+    this.sourceAvailability = 'unavailable',
     DateTime? addedAt,
     DateTime? updatedAt,
     this.progressPercent = 0,
@@ -127,6 +129,16 @@ class BookRecord {
   /// device. Remote snapshots carry [availableOnDeviceIds] instead.
   final String? localPath;
 
+  /// Logical location under the user-selected library root. It is local
+  /// metadata, never an absolute path or a platform URI, and is stripped from
+  /// cross-device snapshots because every device may organize its own root.
+  final String? relativeLocation;
+
+  /// Distinguishes a locally readable source from a File Provider item whose
+  /// bytes need materialization. Values mirror LibraryEntryAvailability names
+  /// without coupling the domain model to platform storage APIs.
+  final String sourceAvailability;
+
   final DateTime addedAt;
   final DateTime updatedAt;
   final double progressPercent;
@@ -141,7 +153,11 @@ class BookRecord {
   final List<String> tombstoneAckedByDeviceIds;
 
   bool get isDeleted => deletedAt != null;
-  bool get isDownloaded => !isDeleted && localPath != null && localPath!.isNotEmpty;
+  bool get hasLocalSource =>
+      !isDeleted &&
+      ((relativeLocation != null && relativeLocation!.isNotEmpty) || (localPath != null && localPath!.isNotEmpty));
+  bool get isDownloaded => hasLocalSource;
+  bool get isOfflineAvailable => hasLocalSource && sourceAvailability == 'available';
   List<BookmarkRecord> get visibleBookmarks => bookmarks.where((bookmark) => !bookmark.isDeleted).toList();
 
   BookDownloadStatus get downloadStatus => isDownloaded ? BookDownloadStatus.downloaded : BookDownloadStatus.remoteOnly;
@@ -156,6 +172,9 @@ class BookRecord {
     String? contentSha256,
     String? localPath,
     bool clearLocalPath = false,
+    String? relativeLocation,
+    bool clearRelativeLocation = false,
+    String? sourceAvailability,
     DateTime? updatedAt,
     double? progressPercent,
     String? currentLocator,
@@ -177,6 +196,8 @@ class BookRecord {
       sizeBytes: sizeBytes ?? this.sizeBytes,
       contentSha256: contentSha256 ?? this.contentSha256,
       localPath: clearLocalPath ? null : (localPath ?? this.localPath),
+      relativeLocation: clearRelativeLocation ? null : (relativeLocation ?? this.relativeLocation),
+      sourceAvailability: sourceAvailability ?? this.sourceAvailability,
       addedAt: addedAt,
       updatedAt: updatedAt ?? DateTime.now().toUtc(),
       progressPercent: progressPercent ?? this.progressPercent,
@@ -199,7 +220,9 @@ class BookRecord {
     'format': format,
     'sizeBytes': sizeBytes,
     'contentSha256': contentSha256,
-    'localPath': includeLocalPath ? localPath : null,
+    if (includeLocalPath) 'localPath': localPath,
+    if (includeLocalPath) 'relativeLocation': relativeLocation,
+    if (includeLocalPath) 'sourceAvailability': sourceAvailability,
     'addedAt': addedAt.toIso8601String(),
     'updatedAt': updatedAt.toIso8601String(),
     'progressPercent': progressPercent,
@@ -222,6 +245,10 @@ class BookRecord {
     sizeBytes: (json['sizeBytes'] as num?)?.toInt() ?? 0,
     contentSha256: json['contentSha256'] as String? ?? json['id'] as String,
     localPath: json['localPath'] as String?,
+    relativeLocation: json['relativeLocation'] as String?,
+    sourceAvailability:
+        json['sourceAvailability'] as String? ??
+        ((json['localPath'] as String?)?.isNotEmpty == true ? 'available' : 'unavailable'),
     addedAt: DateTime.tryParse(json['addedAt'] as String? ?? '') ?? DateTime.now().toUtc(),
     updatedAt: DateTime.tryParse(json['updatedAt'] as String? ?? '') ?? DateTime.now().toUtc(),
     progressPercent: (json['progressPercent'] as num?)?.toDouble() ?? 0,

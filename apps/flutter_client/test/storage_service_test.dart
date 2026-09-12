@@ -3,6 +3,8 @@ import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:readarc/services/library_repository.dart';
+import 'package:readarc/services/library_storage.dart';
+import 'package:readarc/services/book_import_service.dart';
 import 'package:readarc/services/storage_service.dart';
 
 void main() {
@@ -46,6 +48,43 @@ void main() {
 
     expect((await storage.appDir()).path, directory.path);
     expect(resolutions, 1, reason: 'resolved app directory must be reused for the lifetime of StorageService');
+  });
+
+  test('selected user-owned root persists and import writes no private books copy', () async {
+    final application = await Directory.systemTemp.createTemp('readarc-storage-app-');
+    final library = await Directory.systemTemp.createTemp('readarc-storage-root-');
+    final sourceDirectory = await Directory.systemTemp.createTemp('readarc-import-source-');
+    addTearDown(() async {
+      for (final directory in [application, library, sourceDirectory]) {
+        if (await directory.exists()) await directory.delete(recursive: true);
+      }
+    });
+    final secrets = _MemorySecretStore();
+    final provider = LocalDirectoryLibraryStorageProvider();
+    final root = LibraryRoot(kind: LibraryRootKind.desktopPath, locator: library.path, displayName: 'Library');
+    final storage = StorageService(
+      appDirectory: () async => application,
+      secretStore: secrets,
+      libraryStorageProvider: provider,
+    );
+    await storage.configureLibraryRoot(root);
+    final source = File('${sourceDirectory.path}/manual.epub');
+    await source.writeAsString('user owned bytes', flush: true);
+
+    final imported = await BookImportService(storage).importFile(source);
+
+    expect(imported.relativeLocation, 'manual.epub');
+    expect(await File('${library.path}/manual.epub').readAsString(), 'user owned bytes');
+    expect(await Directory('${application.path}/books').exists(), isFalse);
+    final restarted = StorageService(
+      appDirectory: () async => application,
+      secretStore: secrets,
+      libraryStorageProvider: provider,
+    );
+    expect((await restarted.configuredLibraryRoot())?.locator, library.path);
+    await File('${application.path}/library_index.json').delete();
+    expect(await (await restarted.materializeBook(imported)).readAsString(), 'user owned bytes');
+    expect((await restarted.refreshLibrary())?.books.single.id, imported.id);
   });
 }
 

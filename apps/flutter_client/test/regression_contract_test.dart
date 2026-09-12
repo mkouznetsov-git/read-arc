@@ -92,6 +92,27 @@ void main() {
       expect(main, contains('Нет подключения к relay.'));
     });
 
+    test('user-owned library platform integrations remain wired without path identity', () {
+      final storage = _read('lib/services/library_storage.dart');
+      final scanner = _read('lib/services/library_scanner.dart');
+      final book = _read('lib/models/book.dart');
+      final android = _read('android/app/src/main/kotlin/com/readarc/readarc/MainActivity.kt');
+      final macos = _read('macos/Runner/MainFlutterWindow.swift');
+      final ios = _read('ios/Runner/AppDelegate.swift');
+
+      expect(storage, contains('androidTreeUri'));
+      expect(storage, contains('appleSecurityScopedBookmark'));
+      expect(scanner, contains('hasSameFingerprint'));
+      expect(book, contains("if (includeLocalPath) 'relativeLocation'"));
+      expect(android, contains('ACTION_OPEN_DOCUMENT_TREE'));
+      expect(android, contains('takePersistableUriPermission'));
+      expect(macos, contains('withSecurityScope'));
+      expect(macos, contains('startAccessingSecurityScopedResource'));
+      expect(ios, contains('UIDocumentPickerViewController'));
+      expect(ios, contains('startAccessingSecurityScopedResource'));
+      expect(_read('lib/services/sync/sync_service.dart'), contains('_storage.materializeBook(book)'));
+    });
+
     test('critical reader routes remain registered', () {
       final main = _read('lib/app/readarc_app.dart');
       for (final extension in ['pdf', 'djvu', 'epub', 'fb2', 'txt', 'docx', 'doc']) {

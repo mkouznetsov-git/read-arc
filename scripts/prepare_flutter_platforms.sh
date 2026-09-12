@@ -39,6 +39,8 @@ if [[ "$PLATFORMS" == *android* ]]; then
   grep -q 'android.permission.CAMERA' android/app/src/main/AndroidManifest.xml
   grep -q 'android:usesCleartextTraffic="false"' android/app/src/main/AndroidManifest.xml
   grep -q '^force-version-code-ignoring-abi=true$' android/gradle.properties
+  grep -q 'ACTION_OPEN_DOCUMENT_TREE' android/app/src/main/kotlin/com/readarc/readarc/MainActivity.kt
+  grep -q 'takePersistableUriPermission' android/app/src/main/kotlin/com/readarc/readarc/MainActivity.kt
   if [[ -n "$(git -C "$ROOT_DIR" ls-files -- \
     'apps/flutter_client/android/app/*.jks' \
     'apps/flutter_client/android/app/*.keystore')" ]]; then
@@ -68,11 +70,15 @@ for path in (
         )
 PY
   grep -q 'usesDataProtectionKeychain: false' lib/services/library_repository.dart
+  grep -q 'withSecurityScope' macos/Runner/MainFlutterWindow.swift
+  grep -q 'startAccessingSecurityScopedResource' macos/Runner/MainFlutterWindow.swift
 fi
 
 if [[ "$PLATFORMS" == *ios* ]]; then
   grep -q '<string>ReadArc</string>' ios/Runner/Info.plist
   grep -q '<key>NSCameraUsageDescription</key>' ios/Runner/Info.plist
+  grep -q 'UIDocumentPickerViewController' ios/Runner/AppDelegate.swift
+  grep -q 'startAccessingSecurityScopedResource' ios/Runner/AppDelegate.swift
 fi
 
 flutter pub get --enforce-lockfile
