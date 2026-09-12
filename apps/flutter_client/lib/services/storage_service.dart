@@ -272,11 +272,14 @@ class StorageService {
     if (await previous.exists()) await previous.delete();
     _rootCache = root;
     _rootLoaded = true;
-    await refreshLibrary();
+    await refreshLibrary(afterPending: true);
   }
 
-  Future<LibraryScanResult?> refreshLibrary() =>
-      _scanFuture ??= _refreshLibrary().whenComplete(() => _scanFuture = null);
+  Future<LibraryScanResult?> refreshLibrary({bool afterPending = false}) async {
+    final pending = _scanFuture;
+    if (afterPending && pending != null) await pending;
+    return _scanFuture ??= _refreshLibrary().whenComplete(() => _scanFuture = null);
+  }
 
   Future<LibraryScanResult?> _refreshLibrary() async {
     final root = await configuredLibraryRoot();
@@ -374,7 +377,7 @@ class StorageService {
     final root = await configuredLibraryRoot();
     if (root == null) throw StateError('Сначала выберите корневую папку библиотеки');
     final relative = await _libraryStorageProvider.importFile(root, source, preferredName: preferredName);
-    await refreshLibrary();
+    await refreshLibrary(afterPending: true);
     return relative;
   }
 
@@ -382,8 +385,9 @@ class StorageService {
     final root = await configuredLibraryRoot();
     if (root == null) throw StateError('Сначала выберите корневую папку библиотеки');
     await _libraryStorageProvider.importFile(root, verifiedFile, preferredName: book.fileName);
-    final result = await refreshLibrary();
-    if (result == null || !result.books.any((item) => item.id == book.id)) {
+    final result = await refreshLibrary(afterPending: true);
+    final committed = result?.books.where((item) => item.id == book.id).firstOrNull;
+    if (committed?.relativeLocation == null) {
       throw const FileSystemException('Полученная книга не появилась в library root');
     }
     if (await verifiedFile.exists()) await verifiedFile.delete();
