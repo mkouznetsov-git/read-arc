@@ -113,7 +113,7 @@ void main() {
       expect(migrated.trustedDevices.map((device) => device.deviceId), containsAll(['legacy-device', 'paired-device']));
       expect(migrated.books, hasLength(1));
       final migratedBook = migrated.books.single;
-      expect(migratedBook.id, 'legacy-book');
+      expect(migratedBook.id, legacySha);
       expect(migratedBook.localPath, isNull);
       expect(migratedBook.relativeLocation, 'legacy.txt');
       expect(migratedBook.progressPercent, 64);
