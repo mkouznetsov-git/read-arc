@@ -421,9 +421,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
         ],
       ),
       floatingActionButton: FloatingActionButton.extended(
-        onPressed: _busy || _libraryRoot == null || _libraryRootStatus != LibraryRootStatus.available
-            ? null
-            : _addBook,
+        onPressed: _busy || _libraryRoot == null || _libraryRootStatus != LibraryRootStatus.available ? null : _addBook,
         icon: _busy
             ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
             : const Icon(Icons.add_rounded),
@@ -436,7 +434,11 @@ class _LibraryScreenState extends State<LibraryScreen> {
           : _libraryRoot == null
           ? _LibraryRootSetupView(onChoose: _chooseLibraryRoot, busy: _busy)
           : _libraryRootStatus != LibraryRootStatus.available
-          ? _LibraryRootUnavailableView(status: _libraryRootStatus!, onRetry: _reload, onChooseAgain: _chooseLibraryRoot)
+          ? _LibraryRootUnavailableView(
+              status: _libraryRootStatus!,
+              onRetry: _reload,
+              onChooseAgain: _chooseLibraryRoot,
+            )
           : books.isEmpty
           ? const _EmptyLibrary()
           : ValueListenableBuilder<SyncStateSnapshot>(
@@ -578,7 +580,8 @@ class _LibraryRootUnavailableView extends StatelessWidget {
   String get _message => switch (status) {
     LibraryRootStatus.permissionLost => 'Доступ к библиотеке отозван. Выберите эту папку заново.',
     LibraryRootStatus.missing => 'Корневая папка библиотеки не найдена.',
-    LibraryRootStatus.temporarilyUnavailable => 'Библиотека временно недоступна. Возможно, отключён диск или File Provider.',
+    LibraryRootStatus.temporarilyUnavailable =>
+      'Библиотека временно недоступна. Возможно, отключён диск или File Provider.',
     LibraryRootStatus.available => '',
   };
 

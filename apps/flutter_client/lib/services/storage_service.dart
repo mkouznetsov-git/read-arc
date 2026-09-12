@@ -39,7 +39,8 @@ class StorageService {
           ((Platform.isAndroid || Platform.isMacOS || Platform.isIOS)
               ? PlatformLibraryStorageProvider()
               : LocalDirectoryLibraryStorageProvider(
-                  chooseDirectory: () => FilePicker.platform.getDirectoryPath(dialogTitle: 'Выберите библиотеку ReadArc'),
+                  chooseDirectory: () =>
+                      FilePicker.platform.getDirectoryPath(dialogTitle: 'Выберите библиотеку ReadArc'),
                 ));
 
   final _uuid = const Uuid();
@@ -234,15 +235,15 @@ class StorageService {
       try {
         final decoded = jsonDecode(await candidate.readAsString());
         if (decoded is! Map || decoded['target'] is! Map) continue;
-      final pending = LibraryRoot.fromJson(Map<String, dynamic>.from(decoded['target'] as Map));
-      _rootCache = pending;
-      _rootLoaded = true;
-      try {
-        await configureLibraryRoot(pending);
-        return true;
-      } on LibraryRootAccessException {
-        return false;
-      }
+        final pending = LibraryRoot.fromJson(Map<String, dynamic>.from(decoded['target'] as Map));
+        _rootCache = pending;
+        _rootLoaded = true;
+        try {
+          await configureLibraryRoot(pending);
+          return true;
+        } on LibraryRootAccessException {
+          return false;
+        }
       } catch (_) {
         continue;
       }
@@ -274,7 +275,8 @@ class StorageService {
     await refreshLibrary();
   }
 
-  Future<LibraryScanResult?> refreshLibrary() => _scanFuture ??= _refreshLibrary().whenComplete(() => _scanFuture = null);
+  Future<LibraryScanResult?> refreshLibrary() =>
+      _scanFuture ??= _refreshLibrary().whenComplete(() => _scanFuture = null);
 
   Future<LibraryScanResult?> _refreshLibrary() async {
     final root = await configuredLibraryRoot();
@@ -282,12 +284,8 @@ class StorageService {
     final manifest = await loadManifest();
     final indexStore = LibraryIndexStore(_libraryIndexFile);
     final previousIndex = await indexStore.read();
-    final result = await LibraryScanner(_libraryStorageProvider).scan(
-      root: root,
-      previousIndex: previousIndex,
-      previousBooks: manifest.books,
-      deviceId: manifest.deviceId,
-    );
+    final result = await LibraryScanner(_libraryStorageProvider)
+        .scan(root: root, previousIndex: previousIndex, previousBooks: manifest.books, deviceId: manifest.deviceId);
     await mutateManifest((current) {
       var clock = current.logicalClock;
       final currentById = {for (final book in current.books) book.id: book};
@@ -319,7 +317,8 @@ class StorageService {
                 availableOnDeviceIds: sortedAvailableOn,
                 updatedAt: previous.updatedAt,
               );
-        final availabilityChanged = previous == null ||
+        final availabilityChanged =
+            previous == null ||
             previous.isDeleted != merged.isDeleted ||
             !_sameStrings(previous.availableOnDeviceIds, merged.availableOnDeviceIds);
         if (previous == null || !_sameLocalBookState(previous, merged)) changed = true;
@@ -391,8 +390,7 @@ class StorageService {
     return loadManifest();
   }
 
-  bool _sameStrings(List<String> a, List<String> b) =>
-      a.length == b.length && a.toSet().containsAll(b);
+  bool _sameStrings(List<String> a, List<String> b) => a.length == b.length && a.toSet().containsAll(b);
 
   bool _sameLocalBookState(BookRecord a, BookRecord b) =>
       a.fileName == b.fileName &&

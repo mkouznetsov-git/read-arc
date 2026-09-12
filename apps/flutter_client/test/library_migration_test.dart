@@ -70,10 +70,10 @@ void main() {
     final corrupting = _CorruptingProvider(provider);
 
     await expectLater(
-      LegacyLibraryMigrator(provider: corrupting, journalFile: () async => journalFile).migrate(
-        target: root,
-        books: [book],
-      ),
+      LegacyLibraryMigrator(
+        provider: corrupting,
+        journalFile: () async => journalFile,
+      ).migrate(target: root, books: [book]),
       throwsA(isA<FileSystemException>()),
     );
 
@@ -82,8 +82,7 @@ void main() {
     expect(await File(book.localPath!).exists(), isTrue);
   });
 
-  LegacyLibraryMigrator _migrator() =>
-      LegacyLibraryMigrator(provider: provider, journalFile: () async => journalFile);
+  LegacyLibraryMigrator _migrator() => LegacyLibraryMigrator(provider: provider, journalFile: () async => journalFile);
 
   Future<BookRecord> _legacyBook(String name, String contents) async {
     final file = File(p.join(privateDirectory.path, 'books', name));

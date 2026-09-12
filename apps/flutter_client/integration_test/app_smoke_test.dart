@@ -184,8 +184,5 @@ void main() {
 
 class _SmokeStorage extends StorageService {
   _SmokeStorage(Directory directory)
-    : super(
-        appDirectory: () async => directory,
-        libraryStorageProvider: LocalDirectoryLibraryStorageProvider(),
-      );
+    : super(appDirectory: () async => directory, libraryStorageProvider: LocalDirectoryLibraryStorageProvider());
 }

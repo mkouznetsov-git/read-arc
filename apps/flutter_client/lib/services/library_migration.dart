@@ -49,8 +49,8 @@ class LegacyLibraryMigrator {
       }
 
       final existing = await _findContent(target, item.expectedSha256);
-      final relative = existing ??
-          await _provider.importFile(target, File(item.sourcePath), preferredName: book.fileName);
+      final relative =
+          existing ?? await _provider.importFile(target, File(item.sourcePath), preferredName: book.fileName);
       item.relativeLocation = relative;
       await _save(journal);
       if (!await _verify(target, relative, item.expectedSha256)) {
@@ -78,7 +78,9 @@ class LegacyLibraryMigrator {
 
   Future<bool> _verify(LibraryRoot root, String relativeLocation, String expectedSha) async {
     try {
-      final entry = (await _provider.listEntries(root)).where((item) => item.relativeLocation == relativeLocation).firstOrNull;
+      final entry = (await _provider.listEntries(root))
+          .where((item) => item.relativeLocation == relativeLocation)
+          .firstOrNull;
       if (entry == null || entry.availability == LibraryEntryAvailability.unavailable) return false;
       return await _provider.contentSha256(root, entry) == expectedSha;
     } catch (_) {

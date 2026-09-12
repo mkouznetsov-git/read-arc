@@ -15,11 +15,7 @@ void main() {
   setUp(() async {
     rootDirectory = await Directory.systemTemp.createTemp('readarc-user-library-');
     cacheDirectory = await Directory.systemTemp.createTemp('readarc-cache-');
-    root = LibraryRoot(
-      kind: LibraryRootKind.desktopPath,
-      locator: rootDirectory.path,
-      displayName: 'Library',
-    );
+    root = LibraryRoot(kind: LibraryRootKind.desktopPath, locator: rootDirectory.path, displayName: 'Library');
     provider = _CountingProvider(LocalDirectoryLibraryStorageProvider());
   });
 
@@ -69,7 +65,10 @@ void main() {
 
     await _write('new.txt', 'changed and longer');
     final third = await _scan(provider, root, index: second.index, books: second.books);
-    expect(third.books.where((book) => book.hasLocalSource).single.id, isNot(second.books.firstWhere((b) => b.hasLocalSource).id));
+    expect(
+      third.books.where((book) => book.hasLocalSource).single.id,
+      isNot(second.books.firstWhere((b) => b.hasLocalSource).id),
+    );
   });
 
   test('rename and move retain content identity, progress, locator and bookmarks', () async {
@@ -146,7 +145,7 @@ void main() {
   });
 
   Future<void> _write(String relative, String contents) async {
-    final file = File(p.join(rootDirectory.path, ...p.posix.split(relative)));
+    final file = File(p.joinAll(<String>[rootDirectory.path, ...p.posix.split(relative)]));
     await file.parent.create(recursive: true);
     await file.writeAsString(contents, flush: true);
   }
@@ -157,12 +156,7 @@ Future<LibraryScanResult> _scan(
   LibraryRoot root, {
   LibraryIndex index = const LibraryIndex(),
   List<BookRecord> books = const [],
-}) => LibraryScanner(provider).scan(
-  root: root,
-  previousIndex: index,
-  previousBooks: books,
-  deviceId: 'device',
-);
+}) => LibraryScanner(provider).scan(root: root, previousIndex: index, previousBooks: books, deviceId: 'device');
 
 class _CountingProvider implements LibraryStorageProvider {
   _CountingProvider(this.delegate);

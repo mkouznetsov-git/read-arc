@@ -34,11 +34,7 @@ class LibraryRoot {
   final String locator;
   final String displayName;
 
-  Map<String, dynamic> toJson() => {
-    'kind': kind.name,
-    'locator': locator,
-    'displayName': displayName,
-  };
+  Map<String, dynamic> toJson() => {'kind': kind.name, 'locator': locator, 'displayName': displayName};
 
   factory LibraryRoot.fromJson(Map<String, dynamic> json) => LibraryRoot(
     kind: LibraryRootKind.values.byName(json['kind'] as String),
@@ -117,7 +113,11 @@ class LocalDirectoryLibraryStorageProvider implements LibraryStorageProvider {
     if (selected == null || selected.trim().isEmpty) return null;
     final directory = Directory(selected);
     if (!await directory.exists()) await directory.create(recursive: true);
-    return LibraryRoot(kind: LibraryRootKind.desktopPath, locator: directory.path, displayName: p.basename(directory.path));
+    return LibraryRoot(
+      kind: LibraryRootKind.desktopPath,
+      locator: directory.path,
+      displayName: p.basename(directory.path),
+    );
   }
 
   Directory _directory(LibraryRoot root) {
@@ -130,7 +130,7 @@ class LocalDirectoryLibraryStorageProvider implements LibraryStorageProvider {
   File _file(LibraryRoot root, String relativeLocation) {
     final normalized = _normalizeRelativeLocation(relativeLocation);
     final rootDirectory = _directory(root);
-    final file = File(p.join(rootDirectory.path, ...p.posix.split(normalized)));
+    final file = File(p.joinAll(<String>[rootDirectory.path, ...p.posix.split(normalized)]));
     final canonicalRoot = p.canonicalize(rootDirectory.absolute.path);
     final canonicalFile = p.canonicalize(file.absolute.path);
     if (!p.isWithin(canonicalRoot, canonicalFile)) throw const FormatException('Library location escapes root');
@@ -247,9 +247,7 @@ class PlatformLibraryStorageProvider implements LibraryStorageProvider {
 
   @override
   Future<List<LibraryEntry>> listEntries(LibraryRoot root) async {
-    final raw = await _platform(
-      () => _channel.invokeListMethod<dynamic>('listEntries', _rootArgs(root)),
-    ) ?? const [];
+    final raw = await _platform(() => _channel.invokeListMethod<dynamic>('listEntries', _rootArgs(root))) ?? const [];
     return raw.map((item) => LibraryEntry.fromJson(Map<String, dynamic>.from(item as Map))).toList();
   }
 
@@ -269,7 +267,9 @@ class PlatformLibraryStorageProvider implements LibraryStorageProvider {
   Future<File> materialize(LibraryRoot root, LibraryEntry entry, Directory cacheDirectory) async {
     await cacheDirectory.create(recursive: true);
     final extension = p.extension(entry.fileName);
-    final target = File(p.join(cacheDirectory.path, '${base64Url.encode(utf8.encode(entry.relativeLocation))}$extension'));
+    final target = File(
+      p.join(cacheDirectory.path, '${base64Url.encode(utf8.encode(entry.relativeLocation))}$extension'),
+    );
     final value = await _platform(
       () => _channel.invokeMethod<String>('materialize', {
         ..._rootArgs(root),
@@ -297,17 +297,15 @@ class PlatformLibraryStorageProvider implements LibraryStorageProvider {
 
   @override
   Future<void> deleteEntry(LibraryRoot root, String relativeLocation) => _platform(
-    () => _channel.invokeMethod<void>('deleteEntry', {
-      ..._rootArgs(root),
-      'relativeLocation': relativeLocation,
-    }),
+    () => _channel.invokeMethod<void>('deleteEntry', {..._rootArgs(root), 'relativeLocation': relativeLocation}),
   );
 
   @override
   Future<bool> containsFile(LibraryRoot root, File source) async =>
       await _platform(
         () => _channel.invokeMethod<bool>('containsFile', {..._rootArgs(root), 'sourcePath': source.path}),
-      ) ?? false;
+      ) ??
+      false;
 
   Future<T> _platform<T>(Future<T> Function() action) async {
     try {

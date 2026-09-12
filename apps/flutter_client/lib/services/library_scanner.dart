@@ -51,10 +51,7 @@ class LibraryIndex {
 
   final List<LibraryIndexEntry> entries;
 
-  Map<String, dynamic> toJson() => {
-    'schemaVersion': 1,
-    'entries': entries.map((entry) => entry.toJson()).toList(),
-  };
+  Map<String, dynamic> toJson() => {'schemaVersion': 1, 'entries': entries.map((entry) => entry.toJson()).toList()};
 
   factory LibraryIndex.fromJson(Map<String, dynamic> json) => LibraryIndex(
     entries: ((json['entries'] as List?) ?? const [])
@@ -121,10 +118,9 @@ class LibraryScanner {
     }
 
     final previousByLocation = {for (final entry in previousIndex.entries) entry.relativeLocation: entry};
-    final discovered = (await _provider.listEntries(root))
-        .where((entry) => supportedBookExtensions.contains(entry.extension))
-        .toList()
-      ..sort((a, b) => a.relativeLocation.compareTo(b.relativeLocation));
+    final discovered =
+        (await _provider.listEntries(root)).where((entry) => supportedBookExtensions.contains(entry.extension)).toList()
+          ..sort((a, b) => a.relativeLocation.compareTo(b.relativeLocation));
     final indexed = <LibraryIndexEntry>[];
     var hashed = 0;
 
@@ -215,7 +211,11 @@ class LibraryScanner {
       );
     }
 
-    return LibraryScanResult(index: LibraryIndex(entries: indexed), books: books, hashedFiles: hashed);
+    return LibraryScanResult(
+      index: LibraryIndex(entries: indexed),
+      books: books,
+      hashedFiles: hashed,
+    );
   }
 
   LibraryIndexEntry _choosePrimaryLocation(String? previousLocation, List<LibraryIndexEntry> locations) {
