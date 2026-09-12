@@ -8,6 +8,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:readarc/models/book.dart';
 import 'package:readarc/models/manifest.dart';
 import 'package:readarc/services/library_repository.dart';
+import 'package:readarc/services/library_storage.dart';
 import 'package:readarc/services/storage_service.dart';
 import 'package:readarc/services/sync/direct_transfer_server.dart';
 import 'package:readarc/services/sync/sync_service.dart';
@@ -103,13 +104,13 @@ void main() {
 
     final bytes = List<int>.generate(chunkSize * 3 + 173, (index) => index % 251);
     final hash = sha256.convert(bytes).toString();
-    final sourceFile = File('${clientAData.path}/source.bin');
+    final sourceFile = File('${clientAData.path}/source.txt');
     await sourceFile.writeAsBytes(bytes, flush: true);
     final sourceBook = BookRecord(
       id: 'book',
       title: 'Book',
-      fileName: 'source.bin',
-      format: 'bin',
+      fileName: 'source.txt',
+      format: 'txt',
       sizeBytes: bytes.length,
       contentSha256: hash,
       localPath: sourceFile.path,
@@ -164,11 +165,12 @@ void main() {
       await syncB.connect(relayUrl: relayUrl);
       await _waitFor(() async {
         final book = (await storageB.loadManifest()).books.single;
-        return book.isDownloaded && book.localPath != null && await File(book.localPath!).exists();
+        if (!book.isDownloaded) return false;
+        return await (await storageB.materializeBook(book)).exists();
       }, timeout: const Duration(seconds: 15));
 
       final completed = (await storageB.loadManifest()).books.single;
-      final receivedBytes = await File(completed.localPath!).readAsBytes();
+      final receivedBytes = await (await storageB.materializeBook(completed)).readAsBytes();
       expect(receivedBytes, bytes);
       expect(sha256.convert(receivedBytes).toString(), hash);
       expect(await File('${clientBData.path}/incoming/book.transfer.json').exists(), isFalse);
@@ -305,6 +307,12 @@ StorageService _storage(Directory directory, _MemorySecretStore secrets, Library
     normalize: (manifest) => manifest,
   ),
   secretStore: secrets,
+  libraryStorageProvider: LocalDirectoryLibraryStorageProvider(),
+  initialLibraryRoot: LibraryRoot(
+    kind: LibraryRootKind.desktopPath,
+    locator: '${directory.path}/user-library',
+    displayName: 'Library',
+  ),
 );
 
 LibraryManifest _manifest(String deviceId, String key, {BookRecord? book}) => LibraryManifest(
