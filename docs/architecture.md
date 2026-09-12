@@ -1,5 +1,9 @@
 # Архитектура ReadArc
 
+## Пользовательская библиотека (Sprint 49A, ADR-009)
+
+Canonical originals находятся в выбранной пользователем папке, а не в приватном `books/` sandbox. `LibraryRoot` и `LibraryStorageProvider` изолируют Android SAF, Apple security-scoped bookmarks и desktop paths. Incremental `LibraryScanner` сохраняет relative tree и связывает reading state с SHA-256; reader и file transfer используют materialization boundary. См. `adr_009_user_owned_library_storage_ru.md`.
+
 ## Sync reliability boundary (Sprint 47)
 
 `SyncService` остаётся фасадом UI над `ConnectionManager`, `MetadataSyncEngine`, `PairingService`, `FileTransferManager` и `DirectTransferServer`. Sync protocol v3 использует отдельные Lamport revisions для metadata, прогресса и закладок, а также durable `operationId`. Relay хранит непрозрачную зашифрованную очередь событий в SQLite; локальный `LibraryRepository` остаётся транзакционной границей source of truth. File transfer использует durable journal/partial, stop-and-wait chunks с безопасной обработкой повторов и перестановки, restart/resume через relay или HTTP Range и обязательную SHA-256 проверку до изменения manifest.
@@ -28,19 +32,22 @@ ReadArc — local-first приложение. Каждое устройство 
 
 ### 2. Local Storage
 
-Рекомендуется SQLite + файловое хранилище:
+Приватное техническое хранилище и пользовательская библиотека разделены:
 
 ```text
-ReadArc/
-  account.db
-  books/
-    <sha256>.<ext>
-  covers/
-    <sha256>.jpg
-  cache/
+Application sandbox/
+  manifest.json
+  library_root.json
+  library_index.json
+  processed_artifacts/
+  materialized_books/  # воспроизводимый cache
+
+User-selected LibraryRoot/
+  Fiction/book.epub
+  Work/manual.pdf
 ```
 
-MVP использует `manifest.json`, чтобы стартовый код был проще.
+Удаление sandbox/cache не удаляет originals из `LibraryRoot`.
 
 ### 3. Sync Core
 
