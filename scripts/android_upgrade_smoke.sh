@@ -248,13 +248,13 @@ for attempt in {1..75}; do
     echo "ERROR: ReadArc displayed a library load error after package upgrade." >&2
     exit 1
   fi
-  if grep -q 'Preserved Android upgrade book' "$TEMP_DIRECTORY/window.xml"; then
+  if grep -q 'Выберите корневую папку вашей библиотеки' "$TEMP_DIRECTORY/window.xml"; then
     break
   fi
   sleep 0.2
 done
-if ! grep -q 'Preserved Android upgrade book' "$TEMP_DIRECTORY/window.xml"; then
-  echo "ERROR: ReadArc did not finish loading its preserved library after package upgrade." >&2
+if ! grep -q 'Выберите корневую папку вашей библиотеки' "$TEMP_DIRECTORY/window.xml"; then
+  echo "ERROR: ReadArc did not request a user-owned library root after package upgrade." >&2
   exit 1
 fi
 for attempt in {1..100}; do
@@ -311,5 +311,7 @@ mkdir -p "$(dirname "$REPORT_FILE")"
   echo "legacySchemaV1ToV2ToV3=true"
   echo "booksProgressBookmarksPairingPreserved=true"
   echo "accountAndDeviceIdentityPreserved=true"
+  echo "libraryRootSelectionRequired=true"
+  echo "legacySourceRetainedUntilVerifiedMigration=true"
   echo "launchAfterUpgrade=true"
 } | tee "$REPORT_FILE"
