@@ -82,6 +82,8 @@ void main() {
       libraryStorageProvider: provider,
     );
     expect((await restarted.configuredLibraryRoot())?.locator, library.path);
+    await File('${application.path}/library_index.json').delete();
+    expect(await (await restarted.materializeBook(imported)).readAsString(), 'user owned bytes');
     expect((await restarted.refreshLibrary())?.books.single.id, imported.id);
   });
 }

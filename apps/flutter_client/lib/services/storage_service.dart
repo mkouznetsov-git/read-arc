@@ -359,16 +359,14 @@ class StorageService {
     if (root == null || book.relativeLocation == null) {
       throw const LibraryRootAccessException(LibraryRootStatus.missing, 'Источник книги не настроен');
     }
-    final index = await LibraryIndexStore(_libraryIndexFile).read();
-    final indexed = index.entries.where((entry) => entry.relativeLocation == book.relativeLocation).firstOrNull;
-    if (indexed == null) {
-      throw LibraryRootAccessException(LibraryRootStatus.missing, 'Книга отсутствует: ${book.relativeLocation}');
-    }
+    final availability = LibraryEntryAvailability.values.firstWhere(
+      (candidate) => candidate.name == book.sourceAvailability,
+      orElse: () => LibraryEntryAvailability.available,
+    );
     final entry = LibraryEntry(
-      relativeLocation: indexed.relativeLocation,
-      sizeBytes: indexed.sizeBytes,
-      modifiedAt: indexed.modifiedAt,
-      availability: indexed.availability,
+      relativeLocation: book.relativeLocation!,
+      sizeBytes: book.sizeBytes,
+      availability: availability,
     );
     return _libraryStorageProvider.materialize(root, entry, await _materializedBooksDir());
   }
