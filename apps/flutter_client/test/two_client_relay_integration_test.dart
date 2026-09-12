@@ -107,7 +107,7 @@ void main() {
     final sourceFile = File('${clientAData.path}/source.txt');
     await sourceFile.writeAsBytes(bytes, flush: true);
     final sourceBook = BookRecord(
-      id: 'book',
+      id: hash,
       title: 'Book',
       fileName: 'source.txt',
       format: 'txt',
