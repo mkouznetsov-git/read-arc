@@ -28,63 +28,9 @@ void main() {
     if (await rootDirectory.exists()) await rootDirectory.delete(recursive: true);
   });
 
-  test('migration copies to root, verifies SHA and leaves legacy source intact', () async {
-    final book = await _legacyBook('legacy.epub', 'verified bytes');
+  LegacyLibraryMigrator migrator() => LegacyLibraryMigrator(provider: provider, journalFile: () async => journalFile);
 
-    final result = await _migrator().migrate(target: root, books: [book]);
-
-    expect(result.locationsByBookId[book.id], 'legacy.epub');
-    expect(await File(book.localPath!).exists(), isTrue, reason: 'legacy source must not be deleted in Sprint 49A');
-    expect(await File(p.join(rootDirectory.path, 'legacy.epub')).readAsString(), 'verified bytes');
-    final journal = jsonDecode(await journalFile.readAsString()) as Map<String, dynamic>;
-    expect(journal['completed'], isTrue);
-  });
-
-  test('interrupted migration resumes idempotently without a second conflicting copy', () async {
-    final first = await _legacyBook('first.fb2', 'first');
-    final second = await _legacyBook('second.pdf', 'second');
-    var crashed = false;
-    final interrupted = LegacyLibraryMigrator(
-      provider: provider,
-      journalFile: () async => journalFile,
-      afterVerified: (bookId) async {
-        if (!crashed) {
-          crashed = true;
-          throw StateError('simulated crash');
-        }
-      },
-    );
-
-    await expectLater(interrupted.migrate(target: root, books: [first, second]), throwsStateError);
-    final resumed = await _migrator().migrate(target: root, books: [first, second]);
-
-    expect(resumed.locationsByBookId.keys, {first.id, second.id});
-    expect((await rootDirectory.list().whereType<File>().toList()).map((file) => p.basename(file.path)).toSet(), {
-      'first.fb2',
-      'second.pdf',
-    });
-  });
-
-  test('wrong destination content never completes migration', () async {
-    final book = await _legacyBook('book.txt', 'expected');
-    final corrupting = _CorruptingProvider(provider);
-
-    await expectLater(
-      LegacyLibraryMigrator(
-        provider: corrupting,
-        journalFile: () async => journalFile,
-      ).migrate(target: root, books: [book]),
-      throwsA(isA<FileSystemException>()),
-    );
-
-    final journal = jsonDecode(await journalFile.readAsString()) as Map<String, dynamic>;
-    expect(journal['completed'], isFalse);
-    expect(await File(book.localPath!).exists(), isTrue);
-  });
-
-  LegacyLibraryMigrator _migrator() => LegacyLibraryMigrator(provider: provider, journalFile: () async => journalFile);
-
-  Future<BookRecord> _legacyBook(String name, String contents) async {
+  Future<BookRecord> legacyBook(String name, String contents) async {
     final file = File(p.join(privateDirectory.path, 'books', name));
     await file.parent.create(recursive: true);
     await file.writeAsString(contents, flush: true);
@@ -100,6 +46,62 @@ void main() {
       availableOnDeviceIds: const ['device'],
     );
   }
+
+  test('migration copies to root, verifies SHA and leaves legacy source intact', () async {
+    final book = await legacyBook('legacy.epub', 'verified bytes');
+
+    final result = await migrator().migrate(target: root, books: [book]);
+
+    expect(result.locationsByBookId[book.id], 'legacy.epub');
+    expect(await File(book.localPath!).exists(), isTrue, reason: 'legacy source must not be deleted in Sprint 49A');
+    expect(await File(p.join(rootDirectory.path, 'legacy.epub')).readAsString(), 'verified bytes');
+    final journal = jsonDecode(await journalFile.readAsString()) as Map<String, dynamic>;
+    expect(journal['completed'], isTrue);
+  });
+
+  test('interrupted migration resumes idempotently without a second conflicting copy', () async {
+    final first = await legacyBook('first.fb2', 'first');
+    final second = await legacyBook('second.pdf', 'second');
+    var crashed = false;
+    final interrupted = LegacyLibraryMigrator(
+      provider: provider,
+      journalFile: () async => journalFile,
+      afterVerified: (bookId) async {
+        if (!crashed) {
+          crashed = true;
+          throw StateError('simulated crash');
+        }
+      },
+    );
+
+    await expectLater(interrupted.migrate(target: root, books: [first, second]), throwsStateError);
+    final resumed = await migrator().migrate(target: root, books: [first, second]);
+
+    expect(resumed.locationsByBookId.keys, {first.id, second.id});
+    expect(
+      (await rootDirectory.list().where((entity) => entity is File).map((entity) => entity as File).toList())
+          .map((file) => p.basename(file.path))
+          .toSet(),
+      {'first.fb2', 'second.pdf'},
+    );
+  });
+
+  test('wrong destination content never completes migration', () async {
+    final book = await legacyBook('book.txt', 'expected');
+    final corrupting = _CorruptingProvider(provider);
+
+    await expectLater(
+      LegacyLibraryMigrator(
+        provider: corrupting,
+        journalFile: () async => journalFile,
+      ).migrate(target: root, books: [book]),
+      throwsA(isA<FileSystemException>()),
+    );
+
+    final journal = jsonDecode(await journalFile.readAsString()) as Map<String, dynamic>;
+    expect(journal['completed'], isFalse);
+    expect(await File(book.localPath!).exists(), isTrue);
+  });
 }
 
 class _CorruptingProvider implements LibraryStorageProvider {

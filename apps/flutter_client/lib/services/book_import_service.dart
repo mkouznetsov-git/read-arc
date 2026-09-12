@@ -42,6 +42,9 @@ class BookImportService {
 
     final fileName = p.basename(sourceFile.path);
     final format = p.extension(fileName).replaceFirst('.', '').toLowerCase();
+    if (!supportedExtensions.contains(format)) {
+      throw UnsupportedError('Формат .$format пока не поддерживается ReadArc');
+    }
     final digest = await sha256.bind(sourceFile.openRead()).first;
     final sha = digest.toString();
 

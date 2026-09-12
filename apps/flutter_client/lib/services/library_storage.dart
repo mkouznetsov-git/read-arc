@@ -102,8 +102,10 @@ abstract interface class LibraryStorageProvider {
 /// macOS/iOS use security-scoped bookmarks and Android uses SAF through the
 /// method-channel provider below.
 class LocalDirectoryLibraryStorageProvider implements LibraryStorageProvider {
-  LocalDirectoryLibraryStorageProvider({Future<String?> Function()? chooseDirectory})
-    : _chooseDirectory = chooseDirectory;
+  factory LocalDirectoryLibraryStorageProvider({Future<String?> Function()? chooseDirectory}) =>
+      LocalDirectoryLibraryStorageProvider._(chooseDirectory);
+
+  LocalDirectoryLibraryStorageProvider._(this._chooseDirectory);
 
   final Future<String?> Function()? _chooseDirectory;
 
@@ -301,11 +303,12 @@ class PlatformLibraryStorageProvider implements LibraryStorageProvider {
   );
 
   @override
-  Future<bool> containsFile(LibraryRoot root, File source) async =>
-      await _platform(
-        () => _channel.invokeMethod<bool>('containsFile', {..._rootArgs(root), 'sourcePath': source.path}),
-      ) ??
-      false;
+  Future<bool> containsFile(LibraryRoot root, File source) async {
+    final result = await _platform<bool?>(
+      () => _channel.invokeMethod<bool>('containsFile', {..._rootArgs(root), 'sourcePath': source.path}),
+    );
+    return result ?? false;
+  }
 
   Future<T> _platform<T>(Future<T> Function() action) async {
     try {

@@ -24,6 +24,12 @@ void main() {
     if (await cacheDirectory.exists()) await cacheDirectory.delete(recursive: true);
   });
 
+  Future<void> writeBook(String relative, String contents) async {
+    final file = File(p.joinAll(<String>[rootDirectory.path, ...p.posix.split(relative)]));
+    await file.parent.create(recursive: true);
+    await file.writeAsString(contents, flush: true);
+  }
+
   test('empty root produces an empty index without inventing a library', () async {
     final result = await _scan(provider, root);
     expect(result.books, isEmpty);
@@ -31,9 +37,9 @@ void main() {
   });
 
   test('recursive discovery keeps relative folders and filters unsupported extensions', () async {
-    await _write('Fiction/SciFi/book.epub', 'epub');
-    await _write('Work/manual.PDF', 'pdf');
-    await _write('notes.md', 'ignored');
+    await writeBook('Fiction/SciFi/book.epub', 'epub');
+    await writeBook('Work/manual.PDF', 'pdf');
+    await writeBook('notes.md', 'ignored');
 
     final result = await _scan(provider, root);
 
@@ -42,7 +48,7 @@ void main() {
   });
 
   test('unchanged fingerprint reuses SHA and does not hash file again', () async {
-    await _write('book.fb2', 'same');
+    await writeBook('book.fb2', 'same');
     final first = await _scan(provider, root);
     expect(provider.hashCalls, 1);
 
@@ -54,16 +60,16 @@ void main() {
   });
 
   test('new, removed and content-changed books are reconciled', () async {
-    await _write('old.txt', 'old');
+    await writeBook('old.txt', 'old');
     final first = await _scan(provider, root);
     await File(p.join(rootDirectory.path, 'old.txt')).delete();
-    await _write('new.txt', 'new');
+    await writeBook('new.txt', 'new');
 
     final second = await _scan(provider, root, index: first.index, books: first.books);
     expect(second.books.where((book) => book.hasLocalSource).map((book) => book.fileName), ['new.txt']);
     expect(second.books.singleWhere((book) => book.id == first.books.single.id).hasLocalSource, isFalse);
 
-    await _write('new.txt', 'changed and longer');
+    await writeBook('new.txt', 'changed and longer');
     final third = await _scan(provider, root, index: second.index, books: second.books);
     expect(
       third.books.where((book) => book.hasLocalSource).single.id,
@@ -72,7 +78,7 @@ void main() {
   });
 
   test('rename and move retain content identity, progress, locator and bookmarks', () async {
-    await _write('Work/book.epub', 'identity');
+    await writeBook('Work/book.epub', 'identity');
     final first = await _scan(provider, root);
     final bookmark = BookmarkRecord(id: 'mark', bookId: first.books.single.id, label: 'Saved', locator: 'anchor');
     final progressed = first.books.single.copyWith(
@@ -94,8 +100,8 @@ void main() {
   });
 
   test('duplicate content in two paths remains one logical book while index retains both locations', () async {
-    await _write('A/book.pdf', 'duplicate');
-    await _write('B/copy.pdf', 'duplicate');
+    await writeBook('A/book.pdf', 'duplicate');
+    await writeBook('B/copy.pdf', 'duplicate');
 
     final result = await _scan(provider, root);
 
@@ -134,7 +140,7 @@ void main() {
   });
 
   test('manual file addition is found and cache deletion cannot remove source book', () async {
-    await _write('Manual/added.docx', 'manual');
+    await writeBook('Manual/added.docx', 'manual');
     await File(p.join(cacheDirectory.path, 'throwaway')).writeAsString('cache');
     await cacheDirectory.delete(recursive: true);
 
@@ -143,12 +149,6 @@ void main() {
     expect(result.books.single.relativeLocation, 'Manual/added.docx');
     expect(await File(p.join(rootDirectory.path, 'Manual/added.docx')).readAsString(), 'manual');
   });
-
-  Future<void> _write(String relative, String contents) async {
-    final file = File(p.joinAll(<String>[rootDirectory.path, ...p.posix.split(relative)]));
-    await file.parent.create(recursive: true);
-    await file.writeAsString(contents, flush: true);
-  }
 }
 
 Future<LibraryScanResult> _scan(

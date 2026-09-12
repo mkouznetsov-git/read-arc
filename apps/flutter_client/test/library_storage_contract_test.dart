@@ -89,6 +89,9 @@ void main() {
     final relative = await provider.importFile(root, source, preferredName: 'book.txt');
 
     expect(relative, 'Nested/book.txt');
-    expect(await directory.list(recursive: true).whereType<File>().toList(), hasLength(1));
+    expect(
+      await directory.list(recursive: true).where((entity) => entity is File).map((entity) => entity as File).toList(),
+      hasLength(1),
+    );
   });
 }

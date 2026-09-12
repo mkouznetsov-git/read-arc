@@ -12,12 +12,13 @@ class LibraryMigrationResult {
 }
 
 class LegacyLibraryMigrator {
-  LegacyLibraryMigrator({
+  factory LegacyLibraryMigrator({
     required LibraryStorageProvider provider,
     required Future<File> Function() journalFile,
-    this.afterVerified,
-  }) : _provider = provider,
-       _journalFile = journalFile;
+    Future<void> Function(String bookId)? afterVerified,
+  }) => LegacyLibraryMigrator._(provider, journalFile, afterVerified);
+
+  LegacyLibraryMigrator._(this._provider, this._journalFile, this.afterVerified);
 
   final LibraryStorageProvider _provider;
   final Future<File> Function() _journalFile;
