@@ -138,7 +138,7 @@ void main() {
     }
   }, timeout: const Timeout(Duration(minutes: 2)));
 
-  testWidgets('ReadArc creates its initial manifest and opens the empty library', (tester) async {
+  testWidgets('ReadArc creates its initial manifest and asks for a user-owned library root', (tester) async {
     final errors = <FlutterErrorDetails>[];
     final previousHandler = FlutterError.onError;
     FlutterError.onError = errors.add;
@@ -149,11 +149,6 @@ void main() {
       if (await directory.exists()) await directory.delete(recursive: true);
     });
     final storage = _SmokeStorage(directory);
-    final userLibrary = Directory('${directory.path}/user-library');
-    await userLibrary.create();
-    await storage.configureLibraryRoot(
-      LibraryRoot(kind: LibraryRootKind.desktopPath, locator: userLibrary.path, displayName: 'Library'),
-    );
     final sync = SyncService(storage);
     // Relay behavior has its own real two-client integration harness. Keep the
     // platform boot smoke deterministic and independent from production DNS,
@@ -168,7 +163,8 @@ void main() {
 
       expect(find.byType(MaterialApp), findsOneWidget);
       expect(find.byType(app.LibraryScreen), findsOneWidget);
-      expect(find.textContaining('В выбранной папке пока нет'), findsOneWidget);
+      expect(find.text('Выберите корневую папку вашей библиотеки'), findsOneWidget);
+      expect(find.text('Выбрать или создать папку'), findsOneWidget);
       expect(find.textContaining('Не удалось загрузить библиотеку'), findsNothing);
       expect(errors, isEmpty, reason: 'ReadArc emitted a Flutter framework error during startup: $errors');
     } finally {
