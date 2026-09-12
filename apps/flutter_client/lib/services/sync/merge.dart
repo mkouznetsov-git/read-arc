@@ -42,6 +42,8 @@ BookRecord _remoteOnlyBook(BookRecord remote, String localDeviceId) {
     sizeBytes: remote.sizeBytes,
     contentSha256: remote.contentSha256,
     localPath: null,
+    relativeLocation: null,
+    sourceAvailability: 'unavailable',
     addedAt: remote.addedAt,
     updatedAt: remote.updatedAt,
     progressPercent: remote.progressPercent,
@@ -75,7 +77,8 @@ BookRecord _mergeBook(BookRecord local, BookRecord remote, String localDeviceId)
         )
       : const <String>[];
 
-  // localPath is device-local and is never accepted from a remote snapshot.
+  // Local source information is device-local and is never accepted from a
+  // remote snapshot. Content SHA remains the cross-device identity.
   return BookRecord(
     id: local.id,
     title: metadataWinner.title,
@@ -84,6 +87,8 @@ BookRecord _mergeBook(BookRecord local, BookRecord remote, String localDeviceId)
     sizeBytes: metadataWinner.sizeBytes,
     contentSha256: metadataWinner.contentSha256,
     localPath: deleted ? null : local.localPath,
+    relativeLocation: deleted ? null : local.relativeLocation,
+    sourceAvailability: deleted ? 'unavailable' : local.sourceAvailability,
     addedAt: local.addedAt.isBefore(remote.addedAt) ? local.addedAt : remote.addedAt,
     updatedAt: _latest(local.updatedAt, remote.updatedAt),
     progressPercent: progressWinner.progressPercent,

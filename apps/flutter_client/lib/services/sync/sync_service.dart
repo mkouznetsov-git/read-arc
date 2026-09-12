@@ -1216,12 +1216,14 @@ class SyncService {
     if (bookId == null || transferId == null) return;
 
     final book = _findBook(local, bookId);
-    if (book == null || book.localPath == null) return;
-    final file = File(book.localPath!);
-    if (!await file.exists()) {
+    if (book == null || !book.hasLocalSource) return;
+    File file;
+    try {
+      file = await _storage.materializeBook(book);
+    } catch (_) {
       _appendLog('Файл больше не доступен на этом устройстве: ${book.title}');
       try {
-        final updated = await _storage.removeLocalBookCopy(book.id);
+        final updated = await _storage.markLocalSourceUnavailable(book.id);
         _emitManifest(updated);
         await broadcastLibrarySnapshot(reason: 'file_missing_on_source');
       } catch (_) {
@@ -1409,7 +1411,7 @@ class SyncService {
     String message,
   ) async {
     try {
-      final updated = await _storage.removeLocalBookCopy(bookId);
+      final updated = await _storage.markLocalSourceUnavailable(bookId);
       _emitManifest(updated);
       await broadcastLibrarySnapshot(reason: 'file_unavailable_on_source');
     } catch (_) {
@@ -1434,12 +1436,14 @@ class SyncService {
     required bool binaryTransfer,
   }) async {
     final book = _findBook(await _storage.loadManifest(), bookId);
-    if (book == null || book.localPath == null) {
+    if (book == null || !book.hasLocalSource) {
       await _sendFileError(local, transferId, bookId, requestingDeviceId, 'Файл не найден у источника');
       return;
     }
-    final file = File(book.localPath!);
-    if (!await file.exists()) {
+    File file;
+    try {
+      file = await _storage.materializeBook(book);
+    } catch (_) {
       await _handleSourceFileUnavailable(local, transferId, bookId, requestingDeviceId, 'Локальный файл отсутствует');
       return;
     }
@@ -1897,13 +1901,13 @@ class SyncService {
       return;
     }
 
-    final extension = session.format.isEmpty ? 'book' : session.format;
-    final destination = File(p.join((await _storage.booksDir()).path, '${session.expectedSha256}.$extension'));
-    if (await destination.exists()) await destination.delete();
-    await tempFile.rename(destination.path);
+    final current = _findBook(await _storage.loadManifest(), session.bookId);
+    if (current == null) {
+      await _failDownload(session, 'Metadata книги исчезли до завершения передачи');
+      return;
+    }
+    final manifest = await _storage.commitReceivedBook(book: current, verifiedFile: tempFile);
     await _fileTransferManager.markCompleted(session.bookId);
-
-    final manifest = await _storage.markBookDownloaded(bookId: session.bookId, localPath: destination.path);
     _emitManifest(manifest);
     _downloadsByTransferId.remove(session.transferId);
 

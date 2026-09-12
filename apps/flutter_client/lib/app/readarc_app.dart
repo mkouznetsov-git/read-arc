@@ -24,6 +24,7 @@ import '../services/book_import_service.dart';
 import '../services/format_engines/djvu_embedded_engine.dart';
 import '../services/format_engines/djvu_embedded_probe.dart';
 import '../services/storage_service.dart';
+import '../services/library_storage.dart';
 import '../services/sync/sync_service.dart';
 import '../ui/app_theme.dart';
 
@@ -136,6 +137,8 @@ class _LibraryScreenState extends State<LibraryScreen> {
   bool _busy = false;
   bool _bulkDownloadBusy = false;
   String? _libraryLoadError;
+  LibraryRoot? _libraryRoot;
+  LibraryRootStatus? _libraryRootStatus;
   StreamSubscription<LibraryManifest>? _syncSubscription;
 
   @override
@@ -153,10 +156,26 @@ class _LibraryScreenState extends State<LibraryScreen> {
 
   Future<void> _reload() async {
     try {
-      final manifest = await widget.storage.loadManifest().timeout(const Duration(seconds: 12));
+      var manifest = await widget.storage.loadManifest().timeout(const Duration(seconds: 12));
+      await widget.storage.resumePendingLibraryMigration();
+      final root = await widget.storage.configuredLibraryRoot();
+      LibraryRootStatus? rootStatus;
+      if (root != null) {
+        rootStatus = await widget.storage.libraryRootStatus();
+        if (rootStatus == LibraryRootStatus.available) {
+          final clockBeforeScan = manifest.logicalClock;
+          await widget.storage.refreshLibrary();
+          manifest = await widget.storage.loadManifest();
+          if (manifest.logicalClock > clockBeforeScan && widget.sync.state.value.connected) {
+            unawaited(widget.sync.broadcastLibrarySnapshot(reason: 'library_scan'));
+          }
+        }
+      }
       if (mounted) {
         setState(() {
           _manifest = manifest;
+          _libraryRoot = root;
+          _libraryRootStatus = rootStatus;
           _libraryLoadError = null;
         });
       }
@@ -164,6 +183,19 @@ class _LibraryScreenState extends State<LibraryScreen> {
       debugPrint('ReadArc manifest load failed: $error\n$stackTrace');
       if (!mounted) return;
       setState(() => _libraryLoadError = 'Не удалось загрузить библиотеку: $error');
+    }
+  }
+
+  Future<void> _chooseLibraryRoot() async {
+    setState(() => _busy = true);
+    try {
+      final root = await widget.storage.chooseAndConfigureLibrary();
+      if (root != null) await _reload();
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Не удалось открыть библиотеку: $error')));
+    } finally {
+      if (mounted) setState(() => _busy = false);
     }
   }
 
@@ -389,7 +421,9 @@ class _LibraryScreenState extends State<LibraryScreen> {
         ],
       ),
       floatingActionButton: FloatingActionButton.extended(
-        onPressed: _busy ? null : _addBook,
+        onPressed: _busy || _libraryRoot == null || _libraryRootStatus != LibraryRootStatus.available
+            ? null
+            : _addBook,
         icon: _busy
             ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
             : const Icon(Icons.add_rounded),
@@ -399,6 +433,10 @@ class _LibraryScreenState extends State<LibraryScreen> {
           ? _LibraryLoadErrorView(message: _libraryLoadError!, onRetry: _reload)
           : manifest == null
           ? const Center(child: CircularProgressIndicator())
+          : _libraryRoot == null
+          ? _LibraryRootSetupView(onChoose: _chooseLibraryRoot, busy: _busy)
+          : _libraryRootStatus != LibraryRootStatus.available
+          ? _LibraryRootUnavailableView(status: _libraryRootStatus!, onRetry: _reload, onChooseAgain: _chooseLibraryRoot)
           : books.isEmpty
           ? const _EmptyLibrary()
           : ValueListenableBuilder<SyncStateSnapshot>(
@@ -488,12 +526,90 @@ class _EmptyLibrary extends StatelessWidget {
       child: Padding(
         padding: EdgeInsets.all(32),
         child: Text(
-          'Библиотека пока пуста. Добавьте книгу — она будет скопирована в локальное хранилище устройства.',
+          'В выбранной папке пока нет поддерживаемых книг. Добавьте файл через ReadArc или файловый менеджер.',
           textAlign: TextAlign.center,
         ),
       ),
     );
   }
+}
+
+class _LibraryRootSetupView extends StatelessWidget {
+  const _LibraryRootSetupView({required this.onChoose, required this.busy});
+
+  final Future<void> Function() onChoose;
+  final bool busy;
+
+  @override
+  Widget build(BuildContext context) => Center(
+    child: Padding(
+      padding: const EdgeInsets.all(32),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const Icon(Icons.folder_open_rounded, size: 54, color: _raWarmGold),
+          const SizedBox(height: 18),
+          const Text('Выберите корневую папку вашей библиотеки', textAlign: TextAlign.center),
+          const SizedBox(height: 8),
+          const Text(
+            'ReadArc будет индексировать обычные файлы непосредственно в этой папке. При обновлении существующие книги будут безопасно скопированы и проверены.',
+            textAlign: TextAlign.center,
+            style: TextStyle(color: _raMutedPaper),
+          ),
+          const SizedBox(height: 22),
+          FilledButton.icon(
+            onPressed: busy ? null : () => unawaited(onChoose()),
+            icon: const Icon(Icons.create_new_folder_outlined),
+            label: const Text('Выбрать или создать папку'),
+          ),
+        ],
+      ),
+    ),
+  );
+}
+
+class _LibraryRootUnavailableView extends StatelessWidget {
+  const _LibraryRootUnavailableView({required this.status, required this.onRetry, required this.onChooseAgain});
+
+  final LibraryRootStatus status;
+  final Future<void> Function() onRetry;
+  final Future<void> Function() onChooseAgain;
+
+  String get _message => switch (status) {
+    LibraryRootStatus.permissionLost => 'Доступ к библиотеке отозван. Выберите эту папку заново.',
+    LibraryRootStatus.missing => 'Корневая папка библиотеки не найдена.',
+    LibraryRootStatus.temporarilyUnavailable => 'Библиотека временно недоступна. Возможно, отключён диск или File Provider.',
+    LibraryRootStatus.available => '',
+  };
+
+  @override
+  Widget build(BuildContext context) => Center(
+    child: Padding(
+      padding: const EdgeInsets.all(32),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const Icon(Icons.folder_off_outlined, size: 54, color: _raWarmGold),
+          const SizedBox(height: 18),
+          Text(_message, textAlign: TextAlign.center),
+          const SizedBox(height: 10),
+          const Text(
+            'ReadArc сохранил индекс и не считает библиотеку пустой.',
+            textAlign: TextAlign.center,
+            style: TextStyle(color: _raMutedPaper),
+          ),
+          const SizedBox(height: 22),
+          Wrap(
+            spacing: 12,
+            children: [
+              OutlinedButton(onPressed: () => unawaited(onRetry()), child: const Text('Повторить')),
+              FilledButton(onPressed: () => unawaited(onChooseAgain()), child: const Text('Выбрать заново')),
+            ],
+          ),
+        ],
+      ),
+    ),
+  );
 }
 
 class _BookCard extends StatelessWidget {
@@ -777,14 +893,9 @@ class _TxtReaderScreenState extends State<_TxtReaderScreen> {
     final book = await _loadCurrentBook();
     if (!mounted) return;
     _runtimeBook = book;
-    if (book.localPath == null) {
-      setState(() => _loadError = 'Файл книги не скачан на это устройство');
-      return;
-    }
 
     try {
-      final file = File(book.localPath!);
-      if (!await file.exists()) throw StateError('Файл отсутствует: ${book.localPath}');
+      final file = await widget.storage.materializeBook(book);
       final bytes = await file.readAsBytes();
       final raw = _normalizeText(await compute(_decodeTextFile, bytes));
       final totalChars = raw.length;
@@ -1243,16 +1354,8 @@ class _DocxReaderScreenState extends State<_DocxReaderScreen> {
       }
     }
     const label = 'DOCX';
-    if (book.localPath == null) {
-      if (mounted) setState(() => _loadError = 'Файл $label не скачан на это устройство');
-      return;
-    }
-    final file = File(book.localPath!);
-    if (!await file.exists()) {
-      if (mounted) setState(() => _loadError = 'Файл $label отсутствует: ${book.localPath}');
-      return;
-    }
     try {
+      final file = await widget.storage.materializeBook(book);
       final document = await _parseReaderDocumentFromFileSafely(
         kind: _RichSourceKind.docx,
         file: file,
@@ -2308,16 +2411,8 @@ class _Fb2ReaderScreenState extends State<_Fb2ReaderScreen> {
       _RichSourceKind.djvu => 'DJVU',
       _RichSourceKind.fb2 => 'FB2',
     };
-    if (book.localPath == null) {
-      if (mounted) setState(() => _loadError = 'Файл $formatLabel не скачан на это устройство');
-      return;
-    }
-    final file = File(book.localPath!);
-    if (!await file.exists()) {
-      if (mounted) setState(() => _loadError = 'Файл $formatLabel отсутствует: ${book.localPath}');
-      return;
-    }
     try {
+      final file = await widget.storage.materializeBook(book);
       final document = await _parseReaderDocumentFromFileSafely(
         kind: widget.sourceKind,
         file: file,
@@ -5157,15 +5252,7 @@ class _DjvuReaderScreenState extends State<_DjvuReaderScreen> {
           break;
         }
       }
-      if (book.localPath == null || book.localPath!.trim().isEmpty) {
-        if (mounted) setState(() => _error = 'DJVU-файл не скачан на это устройство.');
-        return;
-      }
-      final source = File(book.localPath!);
-      if (!await source.exists()) {
-        if (mounted) setState(() => _error = 'DJVU-файл отсутствует: ${book.localPath}');
-        return;
-      }
+      final source = await widget.storage.materializeBook(book);
       if (mounted) setState(() => _status = 'Проверяем DJVU и готовим кэш страниц…');
       final artifact = await _prepareDjvuArtifact(book: book, sourceFile: source, storage: widget.storage);
       final geometries = await _readDjvuPageGeometries(
@@ -6034,16 +6121,8 @@ class _PdfReaderScreenState extends State<_PdfReaderScreen> {
         break;
       }
     }
-    if (book.localPath == null) {
-      if (mounted) setState(() => _loadError = 'Файл PDF не скачан на это устройство');
-      return;
-    }
-    final file = File(book.localPath!);
-    if (!await file.exists()) {
-      if (mounted) setState(() => _loadError = 'Файл PDF отсутствует: ${book.localPath}');
-      return;
-    }
     try {
+      final file = await widget.storage.materializeBook(book);
       final doc = await PdfDocument.openFile(file.path).timeout(const Duration(seconds: 15));
       final pages = doc.pagesCount;
       final geometries = await _readPdfPageGeometries(doc, pages).timeout(const Duration(seconds: 8));
