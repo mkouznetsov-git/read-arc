@@ -47,6 +47,34 @@ void main() {
     expect(result.books.map((item) => item.format).toSet(), {'epub', 'pdf'});
   });
 
+  test('reserved .readarc namespace is never indexed as user book content', () async {
+    await writeBook('.readarc/portable-metadata.epub', 'not a book');
+    await writeBook('.READARC/cache/book.pdf', 'also reserved on case-insensitive roots');
+    await writeBook('Fiction/book.epub', 'book');
+
+    final result = await _scan(provider, root);
+
+    expect(result.books.single.relativeLocation, 'Fiction/book.epub');
+    expect(result.index.entries.single.relativeLocation, 'Fiction/book.epub');
+    expect(await File(p.join(rootDirectory.path, '.readarc/portable-metadata.epub')).exists(), isTrue);
+  });
+
+  test('desktop scanner never follows file or directory symlinks outside root', () async {
+    final outside = await Directory.systemTemp.createTemp('readarc-outside-root-');
+    addTearDown(() async {
+      if (await outside.exists()) await outside.delete(recursive: true);
+    });
+    await File(p.join(outside.path, 'outside.epub')).writeAsString('outside');
+    await Link(p.join(rootDirectory.path, 'linked-directory')).create(outside.path);
+    await Link(p.join(rootDirectory.path, 'linked-book.epub')).create(p.join(outside.path, 'outside.epub'));
+    await writeBook('inside.epub', 'inside');
+
+    final result = await _scan(provider, root);
+
+    expect(result.books.single.relativeLocation, 'inside.epub');
+    expect(result.index.entries.single.relativeLocation, 'inside.epub');
+  });
+
   test('unchanged fingerprint reuses SHA and does not hash file again', () async {
     await writeBook('book.fb2', 'same');
     final first = await _scan(provider, root);
@@ -69,12 +97,19 @@ void main() {
     expect(second.books.where((book) => book.hasLocalSource).map((book) => book.fileName), ['new.txt']);
     expect(second.books.singleWhere((book) => book.id == first.books.single.id).hasLocalSource, isFalse);
 
+    final current = second.books.firstWhere((book) => book.hasLocalSource);
+    final progressedBooks = second.books
+        .map((book) => book.id == current.id ? book.copyWith(progressPercent: 88, currentLocator: 'old-content') : book)
+        .toList();
     await writeBook('new.txt', 'changed and longer');
-    final third = await _scan(provider, root, index: second.index, books: second.books);
+    final third = await _scan(provider, root, index: second.index, books: progressedBooks);
     expect(
       third.books.where((book) => book.hasLocalSource).single.id,
       isNot(second.books.firstWhere((b) => b.hasLocalSource).id),
     );
+    final replacement = third.books.where((book) => book.hasLocalSource).single;
+    expect(replacement.progressPercent, 0, reason: 'replacement content must not inherit old progress');
+    expect(third.books.singleWhere((book) => book.id == current.id).progressPercent, 88);
   });
 
   test('rename and move retain content identity, progress, locator and bookmarks', () async {
@@ -108,6 +143,14 @@ void main() {
     expect(result.books, hasLength(1));
     expect(result.index.entries, hasLength(2));
     expect(result.index.entries.map((entry) => entry.contentSha256).toSet(), hasLength(1));
+
+    final progressed = result.books.single.copyWith(progressPercent: 73, currentLocator: 'duplicate-locator');
+    await File(p.join(rootDirectory.path, 'A/book.pdf')).delete();
+    final afterOneRemoval = await _scan(provider, root, index: result.index, books: [progressed]);
+    expect(afterOneRemoval.books.single.id, progressed.id);
+    expect(afterOneRemoval.books.single.relativeLocation, 'B/copy.pdf');
+    expect(afterOneRemoval.books.single.progressPercent, 73);
+    expect(afterOneRemoval.books.single.currentLocator, 'duplicate-locator');
   });
 
   test('root unavailable and permission lost fail without returning an empty scan', () async {
@@ -137,6 +180,60 @@ void main() {
     expect(result.index.entries.single.availability, LibraryEntryAvailability.requiresMaterialization);
     expect(result.index.entries.single.contentSha256, 'known-sha');
     expect(cloud.hashCalls, 0);
+  });
+
+  test('new cloud placeholder remains indexed without inventing a book identity', () async {
+    final cloud = _CloudPlaceholderProvider();
+
+    final result = await _scan(cloud, root);
+
+    expect(result.books, isEmpty, reason: 'SHA identity cannot be invented before bytes are readable');
+    expect(result.index.entries.single.relativeLocation, 'Cloud/book.epub');
+    expect(result.index.entries.single.availability, LibraryEntryAvailability.requiresMaterialization);
+    expect(result.index.entries.single.contentSha256, isEmpty);
+    expect(result.index.entries.single.fingerprintVerified, isFalse);
+    expect(cloud.hashCalls, 0);
+  });
+
+  test('changed cloud fingerprint is not trusted until bytes are materialized and hashed', () async {
+    final changedAt = DateTime.utc(2026, 2);
+    final cloud = _ChangingCloudProvider(changedAt);
+    final old = LibraryIndex(
+      entries: [
+        LibraryIndexEntry(
+          relativeLocation: 'Cloud/book.epub',
+          sizeBytes: 10,
+          contentSha256: 'old-sha',
+          availability: LibraryEntryAvailability.available,
+          modifiedAt: DateTime.utc(2026),
+        ),
+      ],
+    );
+    final placeholder = await _scan(cloud, root, index: old);
+    expect(placeholder.index.entries.single.contentSha256, 'old-sha');
+    expect(placeholder.index.entries.single.fingerprintVerified, isFalse);
+    expect(cloud.hashCalls, 0);
+
+    cloud.materialized = true;
+    final materialized = await _scan(cloud, root, index: placeholder.index, books: placeholder.books);
+    expect(cloud.hashCalls, 1);
+    expect(materialized.index.entries.single.contentSha256, 'new-sha');
+    expect(materialized.index.entries.single.fingerprintVerified, isTrue);
+  });
+
+  test('ambiguous duplicate relative locations abort the scan instead of partially reconciling', () async {
+    final duplicate = _DuplicateLocationProvider();
+    await expectLater(
+      _scan(duplicate, root),
+      throwsA(
+        isA<LibraryRootAccessException>().having(
+          (error) => error.status,
+          'status',
+          LibraryRootStatus.temporarilyUnavailable,
+        ),
+      ),
+    );
+    expect(duplicate.hashCalls, 0);
   });
 
   test('manual file addition is found and cache deletion cannot remove source book', () async {
@@ -172,6 +269,8 @@ class _CountingProvider implements LibraryStorageProvider {
   @override
   Future<LibraryRoot?> chooseRoot() => delegate.chooseRoot();
   @override
+  Future<LibraryRoot> refreshRoot(LibraryRoot root) => delegate.refreshRoot(root);
+  @override
   Future<bool> containsFile(LibraryRoot root, File source) => delegate.containsFile(root, source);
   @override
   Future<void> deleteEntry(LibraryRoot root, String relativeLocation) => delegate.deleteEntry(root, relativeLocation);
@@ -193,6 +292,8 @@ class _UnavailableProvider implements LibraryStorageProvider {
   @override
   Future<LibraryRootStatus> status(LibraryRoot root) async => rootStatus;
   @override
+  Future<LibraryRoot> refreshRoot(LibraryRoot root) async => root;
+  @override
   dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
 }
 
@@ -207,6 +308,57 @@ class _CloudPlaceholderProvider extends _UnavailableProvider {
       sizeBytes: 10,
       modifiedAt: DateTime.utc(2026),
       availability: LibraryEntryAvailability.requiresMaterialization,
+    ),
+  ];
+
+  @override
+  Future<String> contentSha256(LibraryRoot root, LibraryEntry entry) async {
+    hashCalls += 1;
+    return 'unexpected';
+  }
+}
+
+class _ChangingCloudProvider extends _UnavailableProvider {
+  _ChangingCloudProvider(this.modifiedAt) : super(LibraryRootStatus.available);
+
+  final DateTime modifiedAt;
+  bool materialized = false;
+  int hashCalls = 0;
+
+  @override
+  Future<List<LibraryEntry>> listEntries(LibraryRoot root) async => [
+    LibraryEntry(
+      relativeLocation: 'Cloud/book.epub',
+      sizeBytes: 20,
+      modifiedAt: modifiedAt,
+      availability: materialized
+          ? LibraryEntryAvailability.available
+          : LibraryEntryAvailability.requiresMaterialization,
+    ),
+  ];
+
+  @override
+  Future<String> contentSha256(LibraryRoot root, LibraryEntry entry) async {
+    hashCalls += 1;
+    return 'new-sha';
+  }
+}
+
+class _DuplicateLocationProvider extends _UnavailableProvider {
+  _DuplicateLocationProvider() : super(LibraryRootStatus.available);
+  int hashCalls = 0;
+
+  @override
+  Future<List<LibraryEntry>> listEntries(LibraryRoot root) async => [
+    const LibraryEntry(
+      relativeLocation: 'duplicate.epub',
+      sizeBytes: 1,
+      availability: LibraryEntryAvailability.available,
+    ),
+    const LibraryEntry(
+      relativeLocation: 'duplicate.epub',
+      sizeBytes: 2,
+      availability: LibraryEntryAvailability.available,
     ),
   ];
 

@@ -46,6 +46,19 @@ private final class IOSLibraryStoragePlugin: NSObject, UIDocumentPickerDelegate 
         .present(picker, animated: true)
       return
     }
+    if call.method == "refreshRoot" {
+      DispatchQueue.global(qos: .userInitiated).async {
+        do {
+          let value = try self.refreshRoot(call.arguments as? [String: Any] ?? [:])
+          DispatchQueue.main.async { result(value) }
+        } catch IOSLibraryError.permissionLost {
+          DispatchQueue.main.async { result(FlutterError(code: "permissionLost", message: "Library permission was lost", details: nil)) }
+        } catch {
+          DispatchQueue.main.async { result(FlutterError(code: "temporarilyUnavailable", message: error.localizedDescription, details: nil)) }
+        }
+      }
+      return
+    }
     DispatchQueue.global(qos: .userInitiated).async {
       do {
         let arguments = call.arguments as? [String: Any] ?? [:]
@@ -111,15 +124,49 @@ private final class IOSLibraryStoragePlugin: NSObject, UIDocumentPickerDelegate 
     return url
   }
 
+  private func refreshRoot(_ arguments: [String: Any]) throws -> [String: Any] {
+    guard let root = arguments["root"] as? [String: Any],
+          let encoded = root["locator"] as? String,
+          let data = Data(base64Encoded: encoded) else { throw IOSLibraryError.invalidArguments }
+    var stale = false
+    let url = try URL(
+      resolvingBookmarkData: data,
+      options: [.withoutUI],
+      relativeTo: nil,
+      bookmarkDataIsStale: &stale)
+    guard url.startAccessingSecurityScopedResource() else { throw IOSLibraryError.permissionLost }
+    defer { url.stopAccessingSecurityScopedResource() }
+    if !stale { return root }
+    let refreshed = try url.bookmarkData(
+      options: [.minimalBookmark],
+      includingResourceValuesForKeys: nil,
+      relativeTo: nil)
+    return [
+      "kind": "appleSecurityScopedBookmark",
+      "locator": refreshed.base64EncodedString(),
+      "displayName": root["displayName"] as? String ?? url.lastPathComponent,
+    ]
+  }
+
   private func entryURL(_ root: URL, _ arguments: [String: Any]) throws -> URL {
     guard let relative = arguments["relativeLocation"] as? String else { throw IOSLibraryError.invalidArguments }
+    let segments = relative.split(separator: "/", omittingEmptySubsequences: false)
+    guard !relative.isEmpty,
+          !relative.hasPrefix("/"),
+          !relative.contains("\0"),
+          !segments.contains(where: { $0.isEmpty || $0 == "." || $0 == ".." })
+    else { throw IOSLibraryError.invalidArguments }
     let candidate = root.appendingPathComponent(relative).standardizedFileURL
     guard candidate.path.hasPrefix(root.standardizedFileURL.path + "/") else { throw IOSLibraryError.invalidArguments }
+    let resolvedRoot = root.resolvingSymlinksInPath().standardizedFileURL.path + "/"
+    guard candidate.resolvingSymlinksInPath().standardizedFileURL.path.hasPrefix(resolvedRoot) else {
+      throw IOSLibraryError.invalidArguments
+    }
     return candidate
   }
 
   private func listEntries(_ root: URL) throws -> [[String: Any?]] {
-    let keys: [URLResourceKey] = [.isRegularFileKey, .fileSizeKey, .contentModificationDateKey, .isUbiquitousItemKey, .ubiquitousItemDownloadingStatusKey]
+    let keys: [URLResourceKey] = [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey, .contentModificationDateKey, .isUbiquitousItemKey, .ubiquitousItemDownloadingStatusKey]
     guard let enumerator = FileManager.default.enumerator(at: root, includingPropertiesForKeys: keys, options: [.skipsHiddenFiles, .skipsPackageDescendants]) else {
       throw IOSLibraryError.missing
     }
@@ -127,8 +174,8 @@ private final class IOSLibraryStoragePlugin: NSObject, UIDocumentPickerDelegate 
     var entries: [[String: Any?]] = []
     for case let url as URL in enumerator {
       let values = try url.resourceValues(forKeys: Set(keys))
-      guard values.isRegularFile == true else { continue }
-      let relative = String(url.standardizedFileURL.path.dropFirst(prefixLength)).replacingOccurrences(of: "\\", with: "/")
+      guard values.isRegularFile == true, values.isSymbolicLink != true else { continue }
+      let relative = String(url.standardizedFileURL.path.dropFirst(prefixLength))
       let needsDownload = values.isUbiquitousItem == true && values.ubiquitousItemDownloadingStatus != .current
       entries.append([
         "relativeLocation": relative,
@@ -137,7 +184,7 @@ private final class IOSLibraryStoragePlugin: NSObject, UIDocumentPickerDelegate 
         "availability": needsDownload ? "requiresMaterialization" : "available",
       ])
     }
-    return entries
+    return entries.sorted { ($0["relativeLocation"] as? String ?? "") < ($1["relativeLocation"] as? String ?? "") }
   }
 
   private func sha256(_ url: URL) throws -> String {
@@ -153,6 +200,9 @@ private final class IOSLibraryStoragePlugin: NSObject, UIDocumentPickerDelegate 
   }
 
   private func materialize(_ source: URL, targetPath: String) throws -> String {
+    if (try source.resourceValues(forKeys: [.isUbiquitousItemKey])).isUbiquitousItem == true {
+      try FileManager.default.startDownloadingUbiquitousItem(at: source)
+    }
     let target = URL(fileURLWithPath: targetPath)
     try FileManager.default.createDirectory(at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
     if FileManager.default.fileExists(atPath: target.path) { try FileManager.default.removeItem(at: target) }
@@ -168,8 +218,12 @@ private final class IOSLibraryStoragePlugin: NSObject, UIDocumentPickerDelegate 
 
   private func importFile(_ root: URL, sourcePath: String, preferredName: String) throws -> String {
     let source = URL(fileURLWithPath: sourcePath).standardizedFileURL
-    let prefix = root.standardizedFileURL.path + "/"
-    if source.path.hasPrefix(prefix) { return String(source.path.dropFirst(prefix.count)) }
+    let resolvedRootPath = root.resolvingSymlinksInPath().standardizedFileURL.path + "/"
+    let sourceValues = try source.resourceValues(forKeys: [.isSymbolicLinkKey])
+    let resolvedSource = source.resolvingSymlinksInPath().standardizedFileURL
+    if sourceValues.isSymbolicLink != true, resolvedSource.path.hasPrefix(resolvedRootPath) {
+      return String(resolvedSource.path.dropFirst(resolvedRootPath.count))
+    }
     let name = (preferredName as NSString).lastPathComponent
     let ext = (name as NSString).pathExtension
     let base = (name as NSString).deletingPathExtension
@@ -179,8 +233,24 @@ private final class IOSLibraryStoragePlugin: NSObject, UIDocumentPickerDelegate 
       candidate = ext.isEmpty ? "\(base) (\(suffix))" : "\(base) (\(suffix)).\(ext)"
       suffix += 1
     }
-    try FileManager.default.copyItem(at: source, to: root.appendingPathComponent(candidate))
-    return candidate
+    let destination = root.appendingPathComponent(candidate)
+    let staged = root.appendingPathComponent(".\(candidate).readarc-partial-\(UUID().uuidString)")
+    do {
+      try FileManager.default.copyItem(at: source, to: staged)
+      guard try sha256(source) == sha256(staged) else { throw IOSLibraryError.verificationFailed }
+      guard !FileManager.default.fileExists(atPath: destination.path) else {
+        throw IOSLibraryError.destinationCollision
+      }
+      try FileManager.default.moveItem(at: staged, to: destination)
+      guard try sha256(destination) == sha256(source) else {
+        try? FileManager.default.removeItem(at: destination)
+        throw IOSLibraryError.verificationFailed
+      }
+      return candidate
+    } catch {
+      try? FileManager.default.removeItem(at: staged)
+      throw error
+    }
   }
 }
 
@@ -190,4 +260,6 @@ private enum IOSLibraryError: Error {
   case permissionLost
   case missing
   case unsupported
+  case verificationFailed
+  case destinationCollision
 }

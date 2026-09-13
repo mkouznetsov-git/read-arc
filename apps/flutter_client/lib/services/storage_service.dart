@@ -186,19 +186,27 @@ class StorageService {
 
   Future<LibraryRoot?> configuredLibraryRoot() async {
     if (_rootLoaded) return _rootCache;
-    _rootLoaded = true;
-    if (_initialLibraryRoot != null) return _rootCache = _initialLibraryRoot;
+    if (_initialLibraryRoot != null) {
+      _rootLoaded = true;
+      return _rootCache = _initialLibraryRoot;
+    }
     final file = await _libraryRootFile();
     for (final candidate in [file, File('${file.path}.previous')]) {
       if (!await candidate.exists()) continue;
       try {
         final decoded = jsonDecode(await candidate.readAsString());
-        if (decoded is Map) return _rootCache = LibraryRoot.fromJson(Map<String, dynamic>.from(decoded));
+        if (decoded is Map) {
+          _rootLoaded = true;
+          return _rootCache = LibraryRoot.fromJson(Map<String, dynamic>.from(decoded));
+        }
       } catch (_) {
         // Try the previous atomic generation before reporting permission loss.
       }
     }
-    if (!await file.exists() && !await File('${file.path}.previous').exists()) return null;
+    if (!await file.exists() && !await File('${file.path}.previous').exists()) {
+      _rootLoaded = true;
+      return null;
+    }
     throw const LibraryRootAccessException(
       LibraryRootStatus.permissionLost,
       'Сохранённое разрешение библиотеки повреждено. Выберите библиотеку заново.',
@@ -206,8 +214,22 @@ class StorageService {
   }
 
   Future<LibraryRootStatus?> libraryRootStatus() async {
-    final root = await configuredLibraryRoot();
-    return root == null ? null : _libraryStorageProvider.status(root);
+    var root = await configuredLibraryRoot();
+    if (root == null) return null;
+    try {
+      final refreshed = await _libraryStorageProvider.refreshRoot(root);
+      if (refreshed.kind != root.kind ||
+          refreshed.locator != root.locator ||
+          refreshed.displayName != root.displayName) {
+        await _persistLibraryRoot(refreshed);
+        _rootCache = refreshed;
+        _rootLoaded = true;
+        root = refreshed;
+      }
+      return await _libraryStorageProvider.status(root);
+    } on LibraryRootAccessException catch (error) {
+      return error.status;
+    }
   }
 
   Future<bool> hasLegacyInternalBooks() async {
@@ -236,12 +258,12 @@ class StorageService {
         final decoded = jsonDecode(await candidate.readAsString());
         if (decoded is! Map || decoded['target'] is! Map) continue;
         final pending = LibraryRoot.fromJson(Map<String, dynamic>.from(decoded['target'] as Map));
-        _rootCache = pending;
-        _rootLoaded = true;
         try {
           await configureLibraryRoot(pending);
           return true;
         } on LibraryRootAccessException {
+          _rootCache = null;
+          _rootLoaded = false;
           return false;
         }
       } catch (_) {
@@ -252,6 +274,7 @@ class StorageService {
   }
 
   Future<void> configureLibraryRoot(LibraryRoot root) async {
+    root = await _libraryStorageProvider.refreshRoot(root);
     final status = await _libraryStorageProvider.status(root);
     if (status != LibraryRootStatus.available) {
       throw LibraryRootAccessException(status, 'Выбранная библиотека недоступна');
@@ -262,6 +285,13 @@ class StorageService {
 
     // The root becomes canonical only after every legacy source has been copied
     // and hash-verified. Source files are intentionally retained.
+    await _persistLibraryRoot(root);
+    _rootCache = root;
+    _rootLoaded = true;
+    await refreshLibrary(afterPending: true);
+  }
+
+  Future<void> _persistLibraryRoot(LibraryRoot root) async {
     final file = await _libraryRootFile();
     final temporary = File('${file.path}.tmp');
     await temporary.writeAsString(const JsonEncoder.withIndent('  ').convert(root.toJson()), flush: true);
@@ -270,9 +300,6 @@ class StorageService {
     if (await file.exists()) await file.rename(previous.path);
     await temporary.rename(file.path);
     if (await previous.exists()) await previous.delete();
-    _rootCache = root;
-    _rootLoaded = true;
-    await refreshLibrary(afterPending: true);
   }
 
   Future<LibraryScanResult?> refreshLibrary({bool afterPending = false}) async {
@@ -282,6 +309,10 @@ class StorageService {
   }
 
   Future<LibraryScanResult?> _refreshLibrary() async {
+    final rootStatus = await libraryRootStatus();
+    if (rootStatus != null && rootStatus != LibraryRootStatus.available) {
+      throw LibraryRootAccessException(rootStatus, 'Library root is not available');
+    }
     final root = await configuredLibraryRoot();
     if (root == null) return null;
     final manifest = await loadManifest();
@@ -355,6 +386,10 @@ class StorageService {
       final legacy = File(legacyPath);
       if (await legacy.exists()) return legacy;
     }
+    final rootStatus = await libraryRootStatus();
+    if (rootStatus != null && rootStatus != LibraryRootStatus.available) {
+      throw LibraryRootAccessException(rootStatus, 'Library root is not available');
+    }
     final root = await configuredLibraryRoot();
     if (root == null || book.relativeLocation == null) {
       throw const LibraryRootAccessException(LibraryRootStatus.missing, 'Источник книги не настроен');
@@ -371,21 +406,45 @@ class StorageService {
     return _libraryStorageProvider.materialize(root, entry, await _materializedBooksDir());
   }
 
-  Future<String> importIntoLibrary(File source, {required String preferredName}) async {
+  Future<String> importIntoLibrary(File source, {required String preferredName, String? expectedSha256}) async {
     final root = await configuredLibraryRoot();
     if (root == null) throw StateError('Сначала выберите корневую папку библиотеки');
+    final before = await refreshLibrary(afterPending: true);
+    if (expectedSha256 != null) {
+      final existing = before?.index.entries
+          .where((entry) => entry.contentSha256 == expectedSha256)
+          .map((entry) => entry.relativeLocation)
+          .firstOrNull;
+      if (existing != null) return existing;
+    }
     final relative = await _libraryStorageProvider.importFile(root, source, preferredName: preferredName);
-    await refreshLibrary(afterPending: true);
+    final result = await refreshLibrary(afterPending: true);
+    if (expectedSha256 != null &&
+        result?.index.entries.any(
+              (entry) => entry.relativeLocation == relative && entry.contentSha256 == expectedSha256,
+            ) !=
+            true) {
+      throw const FileSystemException('Imported library copy failed SHA-256 verification');
+    }
     return relative;
   }
 
   Future<LibraryManifest> commitReceivedBook({required BookRecord book, required File verifiedFile}) async {
     final root = await configuredLibraryRoot();
     if (root == null) throw StateError('Сначала выберите корневую папку библиотеки');
-    await _libraryStorageProvider.importFile(root, verifiedFile, preferredName: book.fileName);
+    final before = await refreshLibrary(afterPending: true);
+    final existing = before?.index.entries.where((entry) => entry.contentSha256 == book.id).firstOrNull;
+    if (existing != null) {
+      if (await verifiedFile.exists()) await verifiedFile.delete();
+      return loadManifest();
+    }
+    final relative = await _libraryStorageProvider.importFile(root, verifiedFile, preferredName: book.fileName);
     final result = await refreshLibrary(afterPending: true);
     final committed = result?.books.where((item) => item.id == book.id).firstOrNull;
-    if (committed?.relativeLocation == null) {
+    final verifiedDestination = result?.index.entries.any(
+      (entry) => entry.relativeLocation == relative && entry.contentSha256 == book.id,
+    );
+    if (committed?.relativeLocation == null || verifiedDestination != true) {
       throw const FileSystemException('Полученная книга не появилась в library root');
     }
     if (await verifiedFile.exists()) await verifiedFile.delete();
@@ -706,7 +765,7 @@ class StorageService {
     final manifest = await loadManifest();
     final target = manifest.books.where((book) => book.id == bookId).firstOrNull;
     if (target == null) throw StateError('Книга не найдена в manifest: $bookId');
-    await _deleteLocalBookFileIfSafe(target);
+    await _deleteLocalBookSources(target);
     return mutateManifest((manifest) {
       final revision = _nextRevision(manifest);
       var found = false;
@@ -760,7 +819,7 @@ class StorageService {
     final manifest = await loadManifest();
     final target = manifest.books.where((book) => book.id == bookId).firstOrNull;
     if (target == null) throw StateError('Книга не найдена в manifest: $bookId');
-    await _deleteLocalBookFileIfSafe(target);
+    await _deleteLocalBookSources(target);
     return mutateManifest((manifest) {
       var found = false;
       final now = DateTime.now().toUtc();
@@ -858,22 +917,37 @@ class StorageService {
     return manifest.copyWith(books: books, trustedDevices: sortedDevices);
   }
 
-  Future<void> _deleteLocalBookFileIfSafe(BookRecord book) async {
-    try {
-      final root = await configuredLibraryRoot();
-      if (root != null && book.relativeLocation != null) {
-        await _libraryStorageProvider.deleteEntry(root, book.relativeLocation!);
-        return;
+  Future<void> _deleteLocalBookSources(BookRecord book) async {
+    final root = await configuredLibraryRoot();
+    if (root != null && book.hasLocalSource) {
+      final status = await libraryRootStatus();
+      if (status != LibraryRootStatus.available) {
+        throw LibraryRootAccessException(
+          status ?? LibraryRootStatus.temporarilyUnavailable,
+          'Нельзя удалить книгу: корень библиотеки недоступен',
+        );
       }
-      final localPath = book.localPath;
-      if (localPath != null && localPath.trim().isNotEmpty) {
-        final file = File(localPath);
-        if (await file.exists()) await file.delete();
+      final before = await refreshLibrary(afterPending: true);
+      final locations =
+          before?.index.entries
+              .where((entry) => entry.contentSha256 == book.id)
+              .map((entry) => entry.relativeLocation)
+              .toList() ??
+          const <String>[];
+      for (final relativeLocation in locations) {
+        await _libraryStorageProvider.deleteEntry(root, relativeLocation);
       }
-    } catch (_) {
-      // Deleting the manifest entry must not fail just because the file was
-      // already removed or the OS denied cleanup. The next import/download will
-      // rewrite the local copy.
+      final after = await refreshLibrary(afterPending: true);
+      if (after?.index.entries.any((entry) => entry.contentSha256 == book.id) == true) {
+        throw const FileSystemException('Не все экземпляры книги удалось удалить из library root');
+      }
+      return;
+    }
+    final localPath = book.localPath;
+    if (localPath != null && localPath.trim().isNotEmpty) {
+      final file = File(localPath);
+      if (await file.exists()) await file.delete();
+      if (await file.exists()) throw const FileSystemException('Legacy source book could not be deleted');
     }
   }
 

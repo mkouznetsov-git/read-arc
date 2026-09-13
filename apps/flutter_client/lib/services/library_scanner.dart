@@ -12,6 +12,7 @@ class LibraryIndexEntry {
     required this.sizeBytes,
     required this.contentSha256,
     required this.availability,
+    this.fingerprintVerified = true,
     this.modifiedAt,
   });
 
@@ -20,8 +21,10 @@ class LibraryIndexEntry {
   final DateTime? modifiedAt;
   final String contentSha256;
   final LibraryEntryAvailability availability;
+  final bool fingerprintVerified;
 
   bool hasSameFingerprint(LibraryEntry entry) {
+    if (!fingerprintVerified) return false;
     if (sizeBytes != entry.sizeBytes) return false;
     if (modifiedAt == null || entry.modifiedAt == null) return false;
     return modifiedAt!.isAtSameMomentAs(entry.modifiedAt!);
@@ -33,6 +36,7 @@ class LibraryIndexEntry {
     'modifiedAt': modifiedAt?.toIso8601String(),
     'contentSha256': contentSha256,
     'availability': availability.name,
+    'fingerprintVerified': fingerprintVerified,
   };
 
   factory LibraryIndexEntry.fromJson(Map<String, dynamic> json) => LibraryIndexEntry(
@@ -43,6 +47,7 @@ class LibraryIndexEntry {
     availability: LibraryEntryAvailability.values.byName(
       json['availability'] as String? ?? LibraryEntryAvailability.available.name,
     ),
+    fingerprintVerified: json['fingerprintVerified'] as bool? ?? true,
   );
 }
 
@@ -51,7 +56,7 @@ class LibraryIndex {
 
   final List<LibraryIndexEntry> entries;
 
-  Map<String, dynamic> toJson() => {'schemaVersion': 1, 'entries': entries.map((entry) => entry.toJson()).toList()};
+  Map<String, dynamic> toJson() => {'schemaVersion': 2, 'entries': entries.map((entry) => entry.toJson()).toList()};
 
   factory LibraryIndex.fromJson(Map<String, dynamic> json) => LibraryIndex(
     entries: ((json['entries'] as List?) ?? const [])
@@ -119,14 +124,29 @@ class LibraryScanner {
 
     final previousByLocation = {for (final entry in previousIndex.entries) entry.relativeLocation: entry};
     final discovered =
-        (await _provider.listEntries(root)).where((entry) => supportedBookExtensions.contains(entry.extension)).toList()
+        (await _provider.listEntries(root))
+            .where(
+              (entry) =>
+                  !isReservedLibraryLocation(entry.relativeLocation) &&
+                  supportedBookExtensions.contains(entry.extension),
+            )
+            .toList()
           ..sort((a, b) => a.relativeLocation.compareTo(b.relativeLocation));
+    for (var index = 1; index < discovered.length; index++) {
+      if (discovered[index - 1].relativeLocation == discovered[index].relativeLocation) {
+        throw LibraryRootAccessException(
+          LibraryRootStatus.temporarilyUnavailable,
+          'Storage provider returned an ambiguous duplicate location: ${discovered[index].relativeLocation}',
+        );
+      }
+    }
     final indexed = <LibraryIndexEntry>[];
     var hashed = 0;
 
     for (final entry in discovered) {
       final old = previousByLocation[entry.relativeLocation];
       String? contentSha;
+      var fingerprintVerified = true;
       if (old != null && old.hasSameFingerprint(entry)) {
         contentSha = old.contentSha256;
       } else if (entry.availability == LibraryEntryAvailability.available) {
@@ -136,8 +156,24 @@ class LibraryScanner {
         // File-provider metadata says the item exists but bytes are not local.
         // Keep its known identity and let materialization happen on demand.
         contentSha = old.contentSha256;
+        fingerprintVerified = false;
       }
-      if (contentSha == null || contentSha.isEmpty) continue;
+      if (contentSha == null || contentSha.isEmpty) {
+        // Preserve the fact that a new File Provider entry logically exists
+        // even when no SHA identity can be established without downloading it.
+        // It becomes a BookRecord only after bytes are materialized and hashed.
+        indexed.add(
+          LibraryIndexEntry(
+            relativeLocation: entry.relativeLocation,
+            sizeBytes: entry.sizeBytes,
+            modifiedAt: entry.modifiedAt,
+            contentSha256: '',
+            availability: entry.availability,
+            fingerprintVerified: false,
+          ),
+        );
+        continue;
+      }
       indexed.add(
         LibraryIndexEntry(
           relativeLocation: entry.relativeLocation,
@@ -145,6 +181,7 @@ class LibraryScanner {
           modifiedAt: entry.modifiedAt,
           contentSha256: contentSha,
           availability: entry.availability,
+          fingerprintVerified: fingerprintVerified,
         ),
       );
     }
@@ -152,6 +189,7 @@ class LibraryScanner {
     final previousById = {for (final book in previousBooks) book.id: book};
     final locationsBySha = <String, List<LibraryIndexEntry>>{};
     for (final entry in indexed) {
+      if (entry.contentSha256.isEmpty) continue;
       locationsBySha.putIfAbsent(entry.contentSha256, () => []).add(entry);
     }
 

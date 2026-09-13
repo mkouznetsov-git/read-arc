@@ -9,6 +9,7 @@ import 'package:uuid/uuid.dart';
 import '../../models/book.dart';
 import '../../models/manifest.dart';
 import '../../models/sync_settings.dart';
+import '../library_storage.dart';
 import '../storage_service.dart';
 import 'connection_manager.dart';
 import 'direct_transfer_server.dart';
@@ -1221,13 +1222,7 @@ class SyncService {
       file = await _storage.materializeBook(book);
     } catch (_) {
       _appendLog('Файл больше не доступен на этом устройстве: ${book.title}');
-      try {
-        final updated = await _storage.markLocalSourceUnavailable(book.id);
-        _emitManifest(updated);
-        await broadcastLibrarySnapshot(reason: 'file_missing_on_source');
-      } catch (_) {
-        // Best effort: transfer must still be terminated for the requester.
-      }
+      await _reconcileMissingLocalSource(book.id, reason: 'file_missing_on_source');
       await _sendFileError(
         local,
         transferId,
@@ -1409,13 +1404,7 @@ class SyncService {
     String requestingDeviceId,
     String message,
   ) async {
-    try {
-      final updated = await _storage.markLocalSourceUnavailable(bookId);
-      _emitManifest(updated);
-      await broadcastLibrarySnapshot(reason: 'file_unavailable_on_source');
-    } catch (_) {
-      // The transfer error is more important than local manifest cleanup here.
-    }
+    await _reconcileMissingLocalSource(bookId, reason: 'file_unavailable_on_source');
     await _sendFileError(
       local,
       transferId,
@@ -1423,6 +1412,22 @@ class SyncService {
       requestingDeviceId,
       '$message. Файл больше недоступен на устройстве-источнике.',
     );
+  }
+
+  Future<void> _reconcileMissingLocalSource(String bookId, {required String reason}) async {
+    try {
+      if (await _storage.libraryRootStatus() != LibraryRootStatus.available) return;
+      await _storage.refreshLibrary(afterPending: true);
+      final updated = await _storage.loadManifest();
+      final current = updated.books.where((book) => book.id == bookId).firstOrNull;
+      // A materialized cache may have disappeared while the user-owned source
+      // remains intact. Only a successful root scan may remove availability.
+      if (current == null || current.hasLocalSource) return;
+      _emitManifest(updated);
+      await broadcastLibrarySnapshot(reason: reason);
+    } catch (_) {
+      // The transfer error is more important than best-effort reconciliation.
+    }
   }
 
   Future<void> _sendFileChunks({

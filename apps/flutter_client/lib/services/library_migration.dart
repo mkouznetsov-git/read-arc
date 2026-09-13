@@ -71,7 +71,11 @@ class LegacyLibraryMigrator {
 
   Future<String?> _findContent(LibraryRoot root, String expectedSha) async {
     for (final entry in await _provider.listEntries(root)) {
-      if (entry.availability == LibraryEntryAvailability.unavailable) continue;
+      if (isReservedLibraryLocation(entry.relativeLocation) ||
+          isLibraryImportStagingLocation(entry.relativeLocation) ||
+          entry.availability == LibraryEntryAvailability.unavailable) {
+        continue;
+      }
       if (await _provider.contentSha256(root, entry) == expectedSha) return entry.relativeLocation;
     }
     return null;

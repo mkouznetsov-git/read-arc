@@ -53,6 +53,7 @@ if [[ "$PLATFORMS" == *macos* ]]; then
   grep -q 'PRODUCT_NAME = ReadArc' macos/Runner/Configs/AppInfo.xcconfig
   grep -q 'com.apple.security.network.client' macos/Runner/Release.entitlements
   grep -q 'com.apple.security.files.user-selected.read-write' macos/Runner/Release.entitlements
+  grep -q 'com.apple.security.files.bookmarks.app-scope' macos/Runner/Release.entitlements
   python3 - <<'PY'
 import plistlib
 from pathlib import Path
@@ -71,6 +72,7 @@ for path in (
 PY
   grep -q 'usesDataProtectionKeychain: false' lib/services/library_repository.dart
   grep -q 'withSecurityScope' macos/Runner/MainFlutterWindow.swift
+  grep -q 'refreshRoot' macos/Runner/MainFlutterWindow.swift
   grep -q 'startAccessingSecurityScopedResource' macos/Runner/MainFlutterWindow.swift
 fi
 

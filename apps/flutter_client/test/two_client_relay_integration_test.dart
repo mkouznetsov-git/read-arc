@@ -89,6 +89,8 @@ void main() {
     final relayData = await Directory.systemTemp.createTemp('readarc-relay-transfer-');
     final clientAData = await Directory.systemTemp.createTemp('readarc-transfer-a-');
     final clientBData = await Directory.systemTemp.createTemp('readarc-transfer-b-');
+    final clientALibrary = await Directory.systemTemp.createTemp('readarc-library-a-');
+    final clientBLibrary = await Directory.systemTemp.createTemp('readarc-library-b-');
     final portProbe = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
     final port = portProbe.port;
     await portProbe.close();
@@ -104,7 +106,8 @@ void main() {
 
     final bytes = List<int>.generate(chunkSize * 3 + 173, (index) => index % 251);
     final hash = sha256.convert(bytes).toString();
-    final sourceFile = File('${clientAData.path}/source.txt');
+    final sourceFile = File('${clientALibrary.path}/Source/source.txt');
+    await sourceFile.parent.create(recursive: true);
     await sourceFile.writeAsBytes(bytes, flush: true);
     final sourceBook = BookRecord(
       id: hash,
@@ -113,15 +116,20 @@ void main() {
       format: 'txt',
       sizeBytes: bytes.length,
       contentSha256: hash,
-      localPath: sourceFile.path,
+      relativeLocation: 'Source/source.txt',
+      sourceAvailability: 'available',
       availableOnDeviceIds: const ['a'],
     );
-    final remoteBook = sourceBook.copyWith(clearLocalPath: true);
+    final remoteBook = sourceBook.copyWith(
+      clearLocalPath: true,
+      clearRelativeLocation: true,
+      sourceAvailability: 'unavailable',
+    );
     final key = base64UrlEncode(Uint8List(32)).replaceAll('=', '');
     final secretsA = _MemorySecretStore();
     final secretsB = _MemorySecretStore();
-    final storageA = _storage(clientAData, secretsA, _manifest('a', key, book: sourceBook));
-    final storageB = _storage(clientBData, secretsB, _manifest('b', key, book: remoteBook));
+    final storageA = _storage(clientAData, secretsA, _manifest('a', key, book: sourceBook), library: clientALibrary);
+    final storageB = _storage(clientBData, secretsB, _manifest('b', key, book: remoteBook), library: clientBLibrary);
     final syncA = SyncService(
       storageA,
       directTransferServer: DirectTransferServer(enabled: false),
@@ -175,6 +183,8 @@ void main() {
       expect(receivedBytes, bytes);
       expect(sha256.convert(receivedBytes).toString(), hash);
       expect(await journal.exists(), isFalse);
+      expect(await File('${clientBLibrary.path}/source.txt').readAsBytes(), bytes);
+      expect(await Directory('${clientBData.path}/books').exists(), isFalse);
     } finally {
       await syncA.dispose();
       await syncB.dispose();
@@ -188,7 +198,7 @@ void main() {
       );
       await stdoutSubscription.cancel();
       await stderrSubscription.cancel();
-      for (final directory in [relayData, clientAData, clientBData]) {
+      for (final directory in [relayData, clientAData, clientBData, clientALibrary, clientBLibrary]) {
         if (await directory.exists()) await directory.delete(recursive: true);
       }
     }
@@ -300,7 +310,12 @@ void main() {
   }, timeout: const Timeout(Duration(seconds: 30)));
 }
 
-StorageService _storage(Directory directory, _MemorySecretStore secrets, LibraryManifest initial) => StorageService(
+StorageService _storage(
+  Directory directory,
+  _MemorySecretStore secrets,
+  LibraryManifest initial, {
+  Directory? library,
+}) => StorageService(
   repository: LibraryRepository(
     appDirectory: () async => directory,
     secretStore: secrets,
@@ -311,7 +326,7 @@ StorageService _storage(Directory directory, _MemorySecretStore secrets, Library
   libraryStorageProvider: LocalDirectoryLibraryStorageProvider(),
   initialLibraryRoot: LibraryRoot(
     kind: LibraryRootKind.desktopPath,
-    locator: '${directory.path}/user-library',
+    locator: library?.path ?? '${directory.path}/user-library',
     displayName: 'Library',
   ),
 );

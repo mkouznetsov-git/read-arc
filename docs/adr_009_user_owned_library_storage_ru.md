@@ -14,6 +14,7 @@ ReadArc не считает оригиналы книг частью прива�
 - `LibraryStorageProvider` — platform boundary для scan, hash, import, delete и materialization.
 - `LibraryScanner` — независимый от UI incremental scanner.
 - `LibraryIndex` — воспроизводимый локальный индекс fingerprint: relative location, size, надёжный modified timestamp, SHA-256 и доступность bytes.
+- Изменившийся cloud fingerprint, bytes которого ещё не materialized, сохраняет прежнюю identity только как непроверенную; следующий доступный scan обязан пересчитать SHA.
 - `BookRecord` — синхронизируемая идентичность/reading state плюс локальные `relativeLocation` и `sourceAvailability`, которые удаляются из sync JSON.
 - Reader и file transfer получают `File` только через `StorageService.materializeBook`; для SAF/File Provider это техническая cache-копия, а не canonical source.
 
@@ -23,8 +24,8 @@ ReadArc не считает оригиналы книг частью прива�
 
 ## Platform mapping
 
-- Android: `ACTION_OPEN_DOCUMENT_TREE`, persisted read/write URI grant, traversal через `DocumentsContract`.
-- macOS: `NSOpenPanel`, security-scoped bookmark и повторный `startAccessingSecurityScopedResource` при каждой операции.
+- Android: `ACTION_OPEN_DOCUMENT_TREE`, persisted read/write URI grant, traversal через `DocumentsContract`; отсутствие cursor считается ошибкой полного scan, а `FLAG_PARTIAL` отображается как `requiresMaterialization`.
+- macOS: `NSOpenPanel`, app-scoped security-scoped bookmark и сбалансированный `startAccessingSecurityScopedResource` при каждой операции. Stale bookmark регенерируется и атомарно сохраняется до scan.
 - iOS: Files directory picker, bookmark descriptor и security-scoped access. UI минимален, но contract совпадает с macOS и не предполагает filesystem path.
 - Windows/Linux: пользовательский desktop path за тем же интерфейсом.
 
@@ -37,3 +38,5 @@ ReadArc не считает оригиналы книг частью прива�
 Переименование и перемещение сохраняют progress, bookmarks, locator и sync history, поскольку они привязаны к SHA-256. Дубликаты одного контента могут иметь несколько index locations, но остаются одной logical book. Удаление cache/index не затрагивает пользовательские originals.
 
 Portable `.readarc` metadata и account recovery остаются Sprint 49B.
+
+Каталог `.readarc` уже зарезервирован: scanner игнорирует всё его содержимое и не переносит/не удаляет его. Symlink-и внутри desktop/Apple root не индексируются и не используются для выхода за выбранную границу.

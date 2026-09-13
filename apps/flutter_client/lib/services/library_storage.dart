@@ -11,21 +11,19 @@ enum LibraryRootStatus { available, temporarilyUnavailable, permissionLost, miss
 
 enum LibraryEntryAvailability { available, requiresMaterialization, unavailable }
 
-const supportedBookExtensions = <String>[
-  'pdf',
-  'doc',
-  'docx',
-  'txt',
-  'fb2',
-  'djvu',
-  'djv',
-  'epub',
-  'chm',
-  'mobi',
-  'azw3',
-  'cbz',
-  'xps',
-];
+const readableBookExtensions = <String>['pdf', 'doc', 'docx', 'txt', 'fb2', 'djvu', 'djv', 'epub'];
+const storeOnlyBookExtensions = <String>['chm', 'mobi', 'azw3', 'cbz', 'xps'];
+const supportedBookExtensions = <String>[...readableBookExtensions, ...storeOnlyBookExtensions];
+
+/// Reserved for portable metadata in Sprint 49B. Sprint 49A must treat this
+/// namespace as application metadata, never as user book content.
+const reservedLibraryDirectoryName = '.readarc';
+
+/// Import staging names are deliberately not valid book extensions, but legacy
+/// migration searches every historical format by hash. Keep partially copied
+/// bytes out of both scanning and migration reconciliation.
+bool isLibraryImportStagingLocation(String relativeLocation) =>
+    p.posix.basename(relativeLocation).contains('.readarc-partial-');
 
 class LibraryRoot {
   const LibraryRoot({required this.kind, required this.locator, required this.displayName});
@@ -89,6 +87,7 @@ class LibraryRootAccessException implements IOException {
 
 abstract interface class LibraryStorageProvider {
   Future<LibraryRoot?> chooseRoot();
+  Future<LibraryRoot> refreshRoot(LibraryRoot root);
   Future<LibraryRootStatus> status(LibraryRoot root);
   Future<List<LibraryEntry>> listEntries(LibraryRoot root);
   Future<String> contentSha256(LibraryRoot root, LibraryEntry entry);
@@ -102,12 +101,15 @@ abstract interface class LibraryStorageProvider {
 /// macOS/iOS use security-scoped bookmarks and Android uses SAF through the
 /// method-channel provider below.
 class LocalDirectoryLibraryStorageProvider implements LibraryStorageProvider {
-  factory LocalDirectoryLibraryStorageProvider({Future<String?> Function()? chooseDirectory}) =>
-      LocalDirectoryLibraryStorageProvider._(chooseDirectory);
+  factory LocalDirectoryLibraryStorageProvider({
+    Future<String?> Function()? chooseDirectory,
+    Future<void> Function(File stagedFile)? afterStagedCopy,
+  }) => LocalDirectoryLibraryStorageProvider._(chooseDirectory, afterStagedCopy);
 
-  LocalDirectoryLibraryStorageProvider._(this._chooseDirectory);
+  LocalDirectoryLibraryStorageProvider._(this._chooseDirectory, this._afterStagedCopy);
 
   final Future<String?> Function()? _chooseDirectory;
+  final Future<void> Function(File stagedFile)? _afterStagedCopy;
 
   @override
   Future<LibraryRoot?> chooseRoot() async {
@@ -121,6 +123,9 @@ class LocalDirectoryLibraryStorageProvider implements LibraryStorageProvider {
       displayName: p.basename(directory.path),
     );
   }
+
+  @override
+  Future<LibraryRoot> refreshRoot(LibraryRoot root) async => root;
 
   Directory _directory(LibraryRoot root) {
     if (root.kind != LibraryRootKind.desktopPath) {
@@ -137,6 +142,16 @@ class LocalDirectoryLibraryStorageProvider implements LibraryStorageProvider {
     final canonicalFile = p.canonicalize(file.absolute.path);
     if (!p.isWithin(canonicalRoot, canonicalFile)) throw const FormatException('Library location escapes root');
     return file;
+  }
+
+  Future<void> _rejectSymlinkTraversal(LibraryRoot root, String relativeLocation) async {
+    var current = _directory(root).absolute.path;
+    for (final segment in p.posix.split(_normalizeRelativeLocation(relativeLocation))) {
+      current = p.join(current, segment);
+      if (await FileSystemEntity.type(current, followLinks: false) == FileSystemEntityType.link) {
+        throw const FormatException('Symbolic links are not supported inside a library root');
+      }
+    }
   }
 
   @override
@@ -174,12 +189,14 @@ class LocalDirectoryLibraryStorageProvider implements LibraryStorageProvider {
 
   @override
   Future<String> contentSha256(LibraryRoot root, LibraryEntry entry) async {
+    await _rejectSymlinkTraversal(root, entry.relativeLocation);
     final file = _file(root, entry.relativeLocation);
     return (await sha256.bind(file.openRead()).first).toString();
   }
 
   @override
   Future<File> materialize(LibraryRoot root, LibraryEntry entry, Directory cacheDirectory) async {
+    await _rejectSymlinkTraversal(root, entry.relativeLocation);
     final file = _file(root, entry.relativeLocation);
     if (!await file.exists()) {
       throw LibraryRootAccessException(LibraryRootStatus.missing, 'Library file is missing: ${entry.relativeLocation}');
@@ -195,8 +212,20 @@ class LocalDirectoryLibraryStorageProvider implements LibraryStorageProvider {
     final relative = await _unusedName(root, _safeFileName(preferredName));
     final destination = _file(root, relative);
     await destination.parent.create(recursive: true);
-    await source.copy(destination.path);
-    return relative;
+    await _rejectSymlinkTraversal(root, relative);
+    final staged = File('${destination.path}.readarc-partial-$pid-${DateTime.now().microsecondsSinceEpoch}');
+    try {
+      await source.copy(staged.path);
+      await _afterStagedCopy?.call(staged);
+      final sourceSha = (await sha256.bind(source.openRead()).first).toString();
+      final stagedSha = (await sha256.bind(staged.openRead()).first).toString();
+      if (sourceSha != stagedSha) throw const FileSystemException('Imported copy failed SHA-256 verification');
+      if (await destination.exists()) throw const FileSystemException('Import destination appeared during copy');
+      await staged.rename(destination.path);
+      return relative;
+    } finally {
+      if (await staged.exists()) await staged.delete();
+    }
   }
 
   Future<String> _unusedName(LibraryRoot root, String preferredName) async {
@@ -211,15 +240,23 @@ class LocalDirectoryLibraryStorageProvider implements LibraryStorageProvider {
 
   @override
   Future<void> deleteEntry(LibraryRoot root, String relativeLocation) async {
+    await _rejectSymlinkTraversal(root, relativeLocation);
     final file = _file(root, relativeLocation);
     if (await file.exists()) await file.delete();
   }
 
   @override
   Future<bool> containsFile(LibraryRoot root, File source) async {
+    if (await FileSystemEntity.type(source.path, followLinks: false) == FileSystemEntityType.link) return false;
     final canonicalRoot = p.canonicalize(_directory(root).absolute.path);
     final canonicalSource = p.canonicalize(source.absolute.path);
-    return canonicalSource == canonicalRoot || p.isWithin(canonicalRoot, canonicalSource);
+    if (!p.isWithin(canonicalRoot, canonicalSource)) return false;
+    try {
+      await _rejectSymlinkTraversal(root, p.relative(canonicalSource, from: canonicalRoot).replaceAll('\\', '/'));
+      return true;
+    } on FormatException {
+      return false;
+    }
   }
 }
 
@@ -235,6 +272,12 @@ class PlatformLibraryStorageProvider implements LibraryStorageProvider {
   Future<LibraryRoot?> chooseRoot() async {
     final value = await _platform(() => _channel.invokeMapMethod<String, dynamic>('chooseRoot'));
     return value == null ? null : LibraryRoot.fromJson(value);
+  }
+
+  @override
+  Future<LibraryRoot> refreshRoot(LibraryRoot root) async {
+    final value = await _platform(() => _channel.invokeMapMethod<String, dynamic>('refreshRoot', _rootArgs(root)));
+    return value == null ? root : LibraryRoot.fromJson(value);
   }
 
   @override
@@ -299,7 +342,10 @@ class PlatformLibraryStorageProvider implements LibraryStorageProvider {
 
   @override
   Future<void> deleteEntry(LibraryRoot root, String relativeLocation) => _platform(
-    () => _channel.invokeMethod<void>('deleteEntry', {..._rootArgs(root), 'relativeLocation': relativeLocation}),
+    () => _channel.invokeMethod<void>('deleteEntry', {
+      ..._rootArgs(root),
+      'relativeLocation': _normalizeRelativeLocation(relativeLocation),
+    }),
   );
 
   @override
@@ -327,11 +373,19 @@ class PlatformLibraryStorageProvider implements LibraryStorageProvider {
 }
 
 String _normalizeRelativeLocation(String value) {
-  final normalized = p.posix.normalize(value.replaceAll('\\', '/')).replaceFirst(RegExp(r'^/+'), '');
-  if (normalized.isEmpty || normalized == '.' || normalized == '..' || normalized.startsWith('../')) {
+  if (value.isEmpty || value.startsWith('/') || value.contains('\u0000')) {
     throw const FormatException('Invalid relative library location');
   }
-  return normalized;
+  final segments = value.split('/');
+  if (segments.any((segment) => segment.isEmpty || segment == '.' || segment == '..')) {
+    throw const FormatException('Invalid relative library location');
+  }
+  return p.posix.joinAll(segments);
+}
+
+bool isReservedLibraryLocation(String relativeLocation) {
+  final normalized = _normalizeRelativeLocation(relativeLocation);
+  return p.posix.split(normalized).first.toLowerCase() == reservedLibraryDirectoryName;
 }
 
 String _safeFileName(String value) {

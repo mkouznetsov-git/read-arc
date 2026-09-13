@@ -102,6 +102,76 @@ void main() {
     expect(journal['completed'], isFalse);
     expect(await File(book.localPath!).exists(), isTrue);
   });
+
+  test('crash after copy but before journal update resumes without a duplicate', () async {
+    final book = await legacyBook('crash.epub', 'restart safe');
+    final copyThenCrash = _CopyThenThrowProvider(provider);
+
+    await expectLater(
+      LegacyLibraryMigrator(
+        provider: copyThenCrash,
+        journalFile: () async => journalFile,
+      ).migrate(target: root, books: [book]),
+      throwsStateError,
+    );
+    final resumed = await migrator().migrate(target: root, books: [book]);
+
+    expect(resumed.locationsByBookId[book.id], 'crash.epub');
+    expect(await rootDirectory.list().where((entity) => entity is File).length, 1);
+    expect(await File(book.localPath!).exists(), isTrue);
+  });
+
+  test('corrupted journal is ignored and rebuilt from retained source originals', () async {
+    final book = await legacyBook('journal.fb2', 'source survives');
+    await journalFile.writeAsString('{broken journal', flush: true);
+
+    final result = await migrator().migrate(target: root, books: [book]);
+
+    expect(result.locationsByBookId[book.id], 'journal.fb2');
+    expect(await File(p.join(rootDirectory.path, 'journal.fb2')).readAsString(), 'source survives');
+    expect(await File(book.localPath!).exists(), isTrue);
+    expect((jsonDecode(await journalFile.readAsString()) as Map<String, dynamic>)['completed'], isTrue);
+  });
+
+  test('migration reuses matching historical store-only content after journal loss', () async {
+    final book = await legacyBook('legacy.mobi', 'historical bytes');
+    await File(p.join(rootDirectory.path, 'already-there.mobi')).writeAsString('historical bytes', flush: true);
+    await journalFile.writeAsString('{broken journal', flush: true);
+
+    final result = await migrator().migrate(target: root, books: [book]);
+
+    expect(result.locationsByBookId[book.id], 'already-there.mobi');
+    expect(await rootDirectory.list().where((entity) => entity is File).length, 1);
+  });
+
+  test('migration never promotes an orphaned partial import as canonical', () async {
+    final book = await legacyBook('partial.epub', 'complete bytes');
+    final orphan = File(p.join(rootDirectory.path, '.partial.epub.readarc-partial-crash'));
+    await orphan.writeAsString('complete bytes', flush: true);
+
+    final result = await migrator().migrate(target: root, books: [book]);
+
+    expect(result.locationsByBookId[book.id], 'partial.epub');
+    expect(await File(p.join(rootDirectory.path, 'partial.epub')).readAsString(), 'complete bytes');
+    expect(await orphan.exists(), isTrue, reason: '49A does not delete unidentified user-root files');
+  });
+
+  test('write failure leaves migration incomplete and source original untouched', () async {
+    final book = await legacyBook('disk-full.pdf', 'original');
+    final failing = _FailingImportProvider(provider);
+
+    await expectLater(
+      LegacyLibraryMigrator(
+        provider: failing,
+        journalFile: () async => journalFile,
+      ).migrate(target: root, books: [book]),
+      throwsA(isA<FileSystemException>()),
+    );
+
+    expect(await File(book.localPath!).exists(), isTrue);
+    final journal = jsonDecode(await journalFile.readAsString()) as Map<String, dynamic>;
+    expect(journal['completed'], isFalse);
+  });
 }
 
 class _CorruptingProvider implements LibraryStorageProvider {
@@ -118,6 +188,8 @@ class _CorruptingProvider implements LibraryStorageProvider {
   @override
   Future<LibraryRoot?> chooseRoot() => delegate.chooseRoot();
   @override
+  Future<LibraryRoot> refreshRoot(LibraryRoot root) => delegate.refreshRoot(root);
+  @override
   Future<bool> containsFile(LibraryRoot root, File source) => delegate.containsFile(root, source);
   @override
   Future<String> contentSha256(LibraryRoot root, LibraryEntry entry) => delegate.contentSha256(root, entry);
@@ -130,4 +202,47 @@ class _CorruptingProvider implements LibraryStorageProvider {
       delegate.materialize(root, entry, cacheDirectory);
   @override
   Future<LibraryRootStatus> status(LibraryRoot root) => delegate.status(root);
+}
+
+class _CopyThenThrowProvider implements LibraryStorageProvider {
+  _CopyThenThrowProvider(this.delegate);
+  final LocalDirectoryLibraryStorageProvider delegate;
+  bool failed = false;
+
+  @override
+  Future<String> importFile(LibraryRoot root, File source, {required String preferredName}) async {
+    final relative = await delegate.importFile(root, source, preferredName: preferredName);
+    if (!failed) {
+      failed = true;
+      throw StateError('simulated crash before journal update');
+    }
+    return relative;
+  }
+
+  @override
+  Future<LibraryRoot?> chooseRoot() => delegate.chooseRoot();
+  @override
+  Future<LibraryRoot> refreshRoot(LibraryRoot root) => delegate.refreshRoot(root);
+  @override
+  Future<bool> containsFile(LibraryRoot root, File source) => delegate.containsFile(root, source);
+  @override
+  Future<String> contentSha256(LibraryRoot root, LibraryEntry entry) => delegate.contentSha256(root, entry);
+  @override
+  Future<void> deleteEntry(LibraryRoot root, String relativeLocation) => delegate.deleteEntry(root, relativeLocation);
+  @override
+  Future<List<LibraryEntry>> listEntries(LibraryRoot root) => delegate.listEntries(root);
+  @override
+  Future<File> materialize(LibraryRoot root, LibraryEntry entry, Directory cacheDirectory) =>
+      delegate.materialize(root, entry, cacheDirectory);
+  @override
+  Future<LibraryRootStatus> status(LibraryRoot root) => delegate.status(root);
+}
+
+class _FailingImportProvider extends _CopyThenThrowProvider {
+  _FailingImportProvider(super.delegate);
+
+  @override
+  Future<String> importFile(LibraryRoot root, File source, {required String preferredName}) {
+    throw const FileSystemException('simulated disk full');
+  }
 }

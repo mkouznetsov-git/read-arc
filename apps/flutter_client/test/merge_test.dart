@@ -42,6 +42,34 @@ void main() {
     expect(merged.books.single.availableOnDeviceIds, ['a', 'b']);
   });
 
+  test('snapshot sender authoritatively removes only its own stale availability', () {
+    final localBook = BookRecord(
+      id: 'book-availability',
+      title: 'Book',
+      fileName: 'book.epub',
+      format: 'epub',
+      sizeBytes: 10,
+      contentSha256: 'book-availability',
+      relativeLocation: 'book.epub',
+      sourceAvailability: 'available',
+      availableOnDeviceIds: const ['a', 'b'],
+    );
+    final remoteBook = localBook.copyWith(
+      clearLocalPath: true,
+      clearRelativeLocation: true,
+      sourceAvailability: 'unavailable',
+      availableOnDeviceIds: const [],
+    );
+
+    final merged = mergeManifests(
+      LibraryManifest(accountId: 'acc', deviceId: 'b', books: [localBook]),
+      LibraryManifest(accountId: 'acc', deviceId: 'a', books: [remoteBook]),
+    );
+
+    expect(merged.books.single.availableOnDeviceIds, ['b']);
+    expect(merged.books.single.relativeLocation, 'book.epub');
+  });
+
   test('merge remote-only book into local library', () {
     final remoteBook = BookRecord(
       id: 'book-2',

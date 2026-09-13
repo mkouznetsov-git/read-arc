@@ -13,7 +13,9 @@ class BookImportService {
 
   final StorageService _storage;
 
-  static const supportedExtensions = supportedBookExtensions;
+  // Store-only formats can be discovered and preserved in an existing root,
+  // but the ordinary import picker must not advertise them as readable.
+  static const supportedExtensions = readableBookExtensions;
 
   Future<BookRecord?> pickAndImport() async {
     // Android document providers often do not advertise niche extensions such as
@@ -48,7 +50,7 @@ class BookImportService {
     final digest = await sha256.bind(sourceFile.openRead()).first;
     final sha = digest.toString();
 
-    await _storage.importIntoLibrary(sourceFile, preferredName: fileName);
+    await _storage.importIntoLibrary(sourceFile, preferredName: fileName, expectedSha256: sha);
     final manifest = await _storage.loadManifest();
     final imported = manifest.books.where((candidate) => candidate.id == sha).firstOrNull;
     if (imported == null) {

@@ -4,6 +4,7 @@ import android.app.Activity
 import android.content.Intent
 import android.database.Cursor
 import android.net.Uri
+import android.os.Build
 import android.provider.DocumentsContract
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.embedding.android.FlutterActivity
@@ -27,6 +28,15 @@ class MainActivity : FlutterActivity() {
         try {
             when (call.method) {
                 "chooseRoot" -> chooseRoot(result)
+                "refreshRoot" -> {
+                    val tree = rootUri(call)
+                    when (rootStatus(tree)) {
+                        "available" -> result.success(call.argument<Map<String, Any?>>("root"))
+                        "permissionLost" -> throw SecurityException("Persisted SAF permission was lost")
+                        "missing" -> throw java.io.FileNotFoundException("Library root is missing")
+                        else -> throw java.io.IOException("Library root is temporarily unavailable")
+                    }
+                }
                 "status" -> result.success(rootStatus(rootUri(call)))
                 "listEntries" -> result.success(listEntries(rootUri(call)))
                 "contentSha256" -> result.success(hash(resolveDocument(rootUri(call), relative(call))))
@@ -88,10 +98,18 @@ class MainActivity : FlutterActivity() {
         return Uri.parse(root["locator"] as String)
     }
 
-    private fun relative(call: MethodCall): String = call.argument<String>("relativeLocation") ?: error("relativeLocation is required")
+    private fun relative(call: MethodCall): String {
+        val value = call.argument<String>("relativeLocation") ?: error("relativeLocation is required")
+        val segments = value.split('/')
+        require(value.isNotEmpty() && !value.startsWith('/') && '\u0000' !in value)
+        require(segments.none { it.isEmpty() || it == "." || it == ".." })
+        return value
+    }
 
     private fun rootStatus(tree: Uri): String {
-        contentResolver.persistedUriPermissions.firstOrNull { it.uri == tree && it.isReadPermission }
+        contentResolver.persistedUriPermissions.firstOrNull {
+            it.uri == tree && it.isReadPermission && it.isWritePermission
+        }
             ?: return "permissionLost"
         return try {
             val root = DocumentsContract.buildDocumentUriUsingTree(tree, DocumentsContract.getTreeDocumentId(tree))
@@ -108,7 +126,12 @@ class MainActivity : FlutterActivity() {
     }
 
     private fun listEntries(tree: Uri): List<Map<String, Any?>> {
-        check(rootStatus(tree) == "available") { "Library root is unavailable" }
+        when (rootStatus(tree)) {
+            "available" -> Unit
+            "permissionLost" -> throw SecurityException("Persisted SAF permission was lost")
+            "missing" -> throw java.io.FileNotFoundException("Library root is missing")
+            else -> throw java.io.IOException("Library root is temporarily unavailable")
+        }
         val root = DocumentsContract.buildDocumentUriUsingTree(tree, DocumentsContract.getTreeDocumentId(tree))
         val result = mutableListOf<Map<String, Any?>>()
         walk(tree, root, "", result)
@@ -124,8 +147,11 @@ class MainActivity : FlutterActivity() {
             DocumentsContract.Document.COLUMN_MIME_TYPE,
             DocumentsContract.Document.COLUMN_SIZE,
             DocumentsContract.Document.COLUMN_LAST_MODIFIED,
+            DocumentsContract.Document.COLUMN_FLAGS,
         )
-        contentResolver.query(children, projection, null, null, null)?.use { cursor ->
+        val cursor = contentResolver.query(children, projection, null, null, null)
+            ?: throw java.io.IOException("Document provider returned no cursor for $prefix")
+        cursor.use {
             while (cursor.moveToNext()) {
                 val documentId = cursor.string(DocumentsContract.Document.COLUMN_DOCUMENT_ID)
                 val name = cursor.string(DocumentsContract.Document.COLUMN_DISPLAY_NAME)
@@ -135,12 +161,15 @@ class MainActivity : FlutterActivity() {
                 if (mime == DocumentsContract.Document.MIME_TYPE_DIR) {
                     walk(tree, uri, relative, output)
                 } else {
+                    val flags = cursor.longOrZero(DocumentsContract.Document.COLUMN_FLAGS)
+                    val isPartial = Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q &&
+                        flags and DocumentsContract.Document.FLAG_PARTIAL.toLong() != 0L
                     output += mapOf(
                         "relativeLocation" to relative,
                         "sizeBytes" to cursor.longOrZero(DocumentsContract.Document.COLUMN_SIZE),
                         "modifiedAt" to cursor.longOrZero(DocumentsContract.Document.COLUMN_LAST_MODIFIED)
                             .takeIf { it > 0 }?.let(::isoTimestamp),
-                        "availability" to "available",
+                        "availability" to if (isPartial) "requiresMaterialization" else "available",
                     )
                 }
             }
@@ -162,7 +191,9 @@ class MainActivity : FlutterActivity() {
             DocumentsContract.Document.COLUMN_DISPLAY_NAME,
             DocumentsContract.Document.COLUMN_MIME_TYPE,
         )
-        contentResolver.query(children, projection, null, null, null)?.use { cursor ->
+        val cursor = contentResolver.query(children, projection, null, null, null)
+            ?: throw java.io.IOException("Document provider returned no cursor while resolving a child")
+        cursor.use {
             while (cursor.moveToNext()) {
                 if (cursor.string(DocumentsContract.Document.COLUMN_DISPLAY_NAME) == name) {
                     return DocumentsContract.buildDocumentUriUsingTree(
@@ -207,15 +238,49 @@ class MainActivity : FlutterActivity() {
         var name = preferredName
         var suffix = 2
         while (findChild(tree, root, name) != null) name = "$base ($suffix)${extension}".also { suffix += 1 }
-        val created = DocumentsContract.createDocument(contentResolver, root, "application/octet-stream", name)
-            ?: error("Cannot create $name")
-        FileInputStream(sourcePath).use { input ->
-            contentResolver.openOutputStream(created, "w").use { output ->
-                requireNotNull(output) { "Cannot write $name" }
-                input.copyTo(output)
+        val source = File(sourcePath)
+        val sourceSha = hashFile(source)
+        val temporaryName = ".$name.readarc-partial-${System.nanoTime()}"
+        var staged: Uri? = DocumentsContract.createDocument(
+            contentResolver,
+            root,
+            "application/octet-stream",
+            temporaryName,
+        ) ?: error("Cannot create import staging document")
+        try {
+            FileInputStream(source).use { input ->
+                contentResolver.openOutputStream(staged!!, "w").use { output ->
+                    requireNotNull(output) { "Cannot stage $name" }
+                    input.copyTo(output)
+                    output.flush()
+                }
+            }
+            check(hash(staged!!) == sourceSha) { "Imported copy failed SHA-256 verification" }
+            check(findChild(tree, root, name) == null) { "Import destination appeared during copy" }
+            val committed = DocumentsContract.renameDocument(contentResolver, staged!!, name)
+                ?: throw java.io.IOException("Document provider cannot atomically commit an import")
+            staged = null
+            if (hash(committed) != sourceSha) {
+                DocumentsContract.deleteDocument(contentResolver, committed)
+                throw java.io.IOException("Committed import failed SHA-256 verification")
+            }
+            return queryName(committed)
+        } finally {
+            staged?.let { runCatching { DocumentsContract.deleteDocument(contentResolver, it) } }
+        }
+    }
+
+    private fun hashFile(file: File): String {
+        val digest = MessageDigest.getInstance("SHA-256")
+        FileInputStream(file).use { input ->
+            val buffer = ByteArray(256 * 1024)
+            while (true) {
+                val read = input.read(buffer)
+                if (read < 0) break
+                digest.update(buffer, 0, read)
             }
         }
-        return name
+        return digest.digest().joinToString("") { "%02x".format(it.toInt() and 0xff) }
     }
 
     private fun queryName(uri: Uri): String = contentResolver.query(
