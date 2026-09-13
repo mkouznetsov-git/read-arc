@@ -155,10 +155,14 @@ class _LibraryScreenState extends State<LibraryScreen> {
   }
 
   Future<void> _reload() async {
+    LibraryManifest? loadedManifest;
+    LibraryRoot? loadedRoot;
     try {
       var manifest = await widget.storage.loadManifest().timeout(const Duration(seconds: 12));
+      loadedManifest = manifest;
       await widget.storage.resumePendingLibraryMigration();
       final root = await widget.storage.configuredLibraryRoot();
+      loadedRoot = root;
       LibraryRootStatus? rootStatus;
       if (root != null) {
         rootStatus = await widget.storage.libraryRootStatus();
@@ -166,6 +170,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
           final clockBeforeScan = manifest.logicalClock;
           await widget.storage.refreshLibrary();
           manifest = await widget.storage.loadManifest();
+          loadedManifest = manifest;
           if (manifest.logicalClock > clockBeforeScan && widget.sync.state.value.connected) {
             unawaited(widget.sync.broadcastLibrarySnapshot(reason: 'library_scan'));
           }
@@ -179,6 +184,15 @@ class _LibraryScreenState extends State<LibraryScreen> {
           _libraryLoadError = null;
         });
       }
+    } on LibraryRootAccessException catch (error, stackTrace) {
+      debugPrint('ReadArc library root access failed: $error\n$stackTrace');
+      if (!mounted) return;
+      setState(() {
+        _manifest = loadedManifest;
+        _libraryRoot = loadedRoot;
+        _libraryRootStatus = error.status;
+        _libraryLoadError = null;
+      });
     } catch (error, stackTrace) {
       debugPrint('ReadArc manifest load failed: $error\n$stackTrace');
       if (!mounted) return;
@@ -431,14 +445,14 @@ class _LibraryScreenState extends State<LibraryScreen> {
           ? _LibraryLoadErrorView(message: _libraryLoadError!, onRetry: _reload)
           : manifest == null
           ? const Center(child: CircularProgressIndicator())
-          : _libraryRoot == null
-          ? _LibraryRootSetupView(onChoose: _chooseLibraryRoot, busy: _busy)
-          : _libraryRootStatus != LibraryRootStatus.available
+          : _libraryRootStatus != null && _libraryRootStatus != LibraryRootStatus.available
           ? _LibraryRootUnavailableView(
               status: _libraryRootStatus!,
               onRetry: _reload,
               onChooseAgain: _chooseLibraryRoot,
             )
+          : _libraryRoot == null
+          ? _LibraryRootSetupView(onChoose: _chooseLibraryRoot, busy: _busy)
           : books.isEmpty
           ? const _EmptyLibrary()
           : ValueListenableBuilder<SyncStateSnapshot>(
