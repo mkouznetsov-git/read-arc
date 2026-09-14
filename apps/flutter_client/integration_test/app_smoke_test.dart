@@ -18,7 +18,10 @@ void main() {
   testWidgets('ReadArc migrates a pre-Sprint-46 manifest and opens the library', (tester) async {
     final errors = <FlutterErrorDetails>[];
     final previousHandler = FlutterError.onError;
-    FlutterError.onError = errors.add;
+    FlutterError.onError = (details) {
+      errors.add(details);
+      previousHandler?.call(details);
+    };
     addTearDown(() => FlutterError.onError = previousHandler);
 
     final directory = await Directory.systemTemp.createTemp('readarc-platform-upgrade-smoke-');
@@ -145,7 +148,10 @@ void main() {
   testWidgets('ReadArc creates its initial manifest and asks for a user-owned library root', (tester) async {
     final errors = <FlutterErrorDetails>[];
     final previousHandler = FlutterError.onError;
-    FlutterError.onError = errors.add;
+    FlutterError.onError = (details) {
+      errors.add(details);
+      previousHandler?.call(details);
+    };
     addTearDown(() => FlutterError.onError = previousHandler);
 
     final directory = await Directory.systemTemp.createTemp('readarc-platform-smoke-');
