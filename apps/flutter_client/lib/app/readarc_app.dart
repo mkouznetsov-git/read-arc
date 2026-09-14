@@ -246,9 +246,9 @@ class _LibraryScreenState extends State<LibraryScreen> {
           title: const Text('Восстановить существующий аккаунт ReadArc'),
           content: Text(
             'В выбранной библиотеке найдено переносимое состояние ReadArc.\n\n'
-                    'Recovery Key нужен, если больше не осталось ни одного '
-                    'подключённого устройства.' +
-                (inspection.accountIds.isEmpty ? '' : '\n\nАккаунт: ' + inspection.accountIds.join(', ')),
+            'Recovery Key нужен, если больше не осталось ни одного '
+            'подключённого устройства.'
+            "${inspection.accountIds.isEmpty ? '' : '\n\nАккаунт: ${inspection.accountIds.join(', ')}'}",
           ),
           actions: [
             TextButton(onPressed: () => Navigator.of(context).pop(), child: const Text('Отмена')),
