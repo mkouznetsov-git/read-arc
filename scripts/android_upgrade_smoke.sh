@@ -13,6 +13,7 @@ PACKAGE_ID="com.readarc.readarc"
 SENTINEL="readarc-upgrade-data-preserved"
 APP_DATA_ROOT="/data/user/0/$PACKAGE_ID"
 MANIFEST_PATH="$APP_DATA_ROOT/app_flutter/ReadArc/manifest.json"
+LIBRARY_ROOT_PATH="$APP_DATA_ROOT/app_flutter/ReadArc/library_root.json"
 
 for apk in "$OLD_APK" "$NEW_APK"; do
   if [[ ! -f "$apk" ]]; then
@@ -241,33 +242,43 @@ if [[ "$(adb shell "cat '$APP_DATA_ROOT/files/upgrade-sentinel'" | tr -d '\r')" 
 fi
 adb shell am start -W -n "$PACKAGE_ID/.MainActivity" | tee /tmp/readarc-new-launch.txt
 grep -q 'Status: ok' /tmp/readarc-new-launch.txt
-for attempt in {1..75}; do
-  adb shell uiautomator dump /sdcard/readarc-window.xml >/dev/null 2>&1 || true
-  adb exec-out cat /sdcard/readarc-window.xml > "$TEMP_DIRECTORY/window.xml" 2>/dev/null || true
-  if grep -q 'Не удалось загрузить библиотеку' "$TEMP_DIRECTORY/window.xml"; then
-    echo "ERROR: ReadArc displayed a library load error after package upgrade." >&2
-    exit 1
-  fi
-  if grep -q 'Preserved Android upgrade book' "$TEMP_DIRECTORY/window.xml"; then
-    break
-  fi
-  sleep 0.2
-done
-if ! grep -q 'Preserved Android upgrade book' "$TEMP_DIRECTORY/window.xml"; then
-  echo "ERROR: ReadArc did not finish loading its preserved library after package upgrade." >&2
-  exit 1
-fi
 for attempt in {1..100}; do
-  if adb shell "test -s '$MANIFEST_PATH'"; then
+  adb exec-out cat "$MANIFEST_PATH" > "$TEMP_DIRECTORY/new-manifest.json" 2>/dev/null || true
+  if python3 - "$TEMP_DIRECTORY/new-manifest.json" <<'PY'
+import json
+import pathlib
+import sys
+
+try:
+    manifest = json.loads(pathlib.Path(sys.argv[1]).read_text())
+except (OSError, ValueError):
+    raise SystemExit(1)
+raise SystemExit(0 if manifest.get('schemaVersion') == 3 else 1)
+PY
+  then
     break
   fi
   sleep 0.2
 done
-if ! adb shell "test -s '$MANIFEST_PATH'"; then
-  echo "ERROR: upgraded release lost its manifest." >&2
+if ! python3 - "$TEMP_DIRECTORY/new-manifest.json" <<'PY'
+import json
+import pathlib
+import sys
+
+try:
+    manifest = json.loads(pathlib.Path(sys.argv[1]).read_text())
+except (OSError, ValueError):
+    raise SystemExit(1)
+raise SystemExit(0 if manifest.get('schemaVersion') == 3 else 1)
+PY
+then
+  echo "ERROR: upgraded release did not finish migrating its manifest." >&2
   exit 1
 fi
-adb exec-out cat "$MANIFEST_PATH" > "$TEMP_DIRECTORY/new-manifest.json"
+if adb shell "test -e '$LIBRARY_ROOT_PATH'"; then
+  echo "ERROR: ReadArc silently created a canonical library root during package upgrade." >&2
+  exit 1
+fi
 python3 - "$TEMP_DIRECTORY/old-manifest.json" "$TEMP_DIRECTORY/new-manifest.json" <<'PY'
 import json
 import pathlib
@@ -311,5 +322,7 @@ mkdir -p "$(dirname "$REPORT_FILE")"
   echo "legacySchemaV1ToV2ToV3=true"
   echo "booksProgressBookmarksPairingPreserved=true"
   echo "accountAndDeviceIdentityPreserved=true"
+  echo "libraryRootSelectionRequired=true"
+  echo "legacySourceRetainedUntilVerifiedMigration=true"
   echo "launchAfterUpgrade=true"
 } | tee "$REPORT_FILE"

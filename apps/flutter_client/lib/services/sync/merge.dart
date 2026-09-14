@@ -14,7 +14,7 @@ LibraryManifest mergeManifests(LibraryManifest local, LibraryManifest remote) {
     final localBook = mergedById[remoteBook.id];
     mergedById[remoteBook.id] = localBook == null
         ? _remoteOnlyBook(remoteBook, local.deviceId)
-        : _mergeBook(localBook, remoteBook, local.deviceId);
+        : _mergeBook(localBook, remoteBook, local.deviceId, remote.deviceId);
   }
 
   final applied = <String>{...local.appliedOperationIds, ...remote.appliedOperationIds}.toList();
@@ -42,6 +42,8 @@ BookRecord _remoteOnlyBook(BookRecord remote, String localDeviceId) {
     sizeBytes: remote.sizeBytes,
     contentSha256: remote.contentSha256,
     localPath: null,
+    relativeLocation: null,
+    sourceAvailability: 'unavailable',
     addedAt: remote.addedAt,
     updatedAt: remote.updatedAt,
     progressPercent: remote.progressPercent,
@@ -61,11 +63,26 @@ BookRecord _remoteOnlyBook(BookRecord remote, String localDeviceId) {
   );
 }
 
-BookRecord _mergeBook(BookRecord local, BookRecord remote, String localDeviceId) {
+BookRecord _mergeBook(BookRecord local, BookRecord remote, String localDeviceId, String remoteDeviceId) {
   final metadataWinner = _metadataCompare(local, remote) >= 0 ? local : remote;
   final progressWinner = _progressCompare(local, remote) >= 0 ? local : remote;
   final bookmarks = _mergeBookmarks(local.bookmarks, remote.bookmarks, localDeviceId);
-  final availableOn = <String>{...local.availableOnDeviceIds, ...remote.availableOnDeviceIds}.toList()..sort();
+  final availableOnSet = <String>{...local.availableOnDeviceIds, ...remote.availableOnDeviceIds};
+  // Each snapshot sender is authoritative only for its own source presence.
+  // A plain union makes a removed local file live forever on peers. Conversely,
+  // a peer must not be allowed to erase another device's independently reported
+  // availability.
+  if (remote.availableOnDeviceIds.contains(remoteDeviceId)) {
+    availableOnSet.add(remoteDeviceId);
+  } else {
+    availableOnSet.remove(remoteDeviceId);
+  }
+  if (local.availableOnDeviceIds.contains(localDeviceId)) {
+    availableOnSet.add(localDeviceId);
+  } else {
+    availableOnSet.remove(localDeviceId);
+  }
+  final availableOn = availableOnSet.toList()..sort();
   final deleted = metadataWinner.isDeleted;
   final deletionAcks = deleted
       ? _acknowledgeIfDeleted(
@@ -75,7 +92,8 @@ BookRecord _mergeBook(BookRecord local, BookRecord remote, String localDeviceId)
         )
       : const <String>[];
 
-  // localPath is device-local and is never accepted from a remote snapshot.
+  // Local source information is device-local and is never accepted from a
+  // remote snapshot. Content SHA remains the cross-device identity.
   return BookRecord(
     id: local.id,
     title: metadataWinner.title,
@@ -84,6 +102,8 @@ BookRecord _mergeBook(BookRecord local, BookRecord remote, String localDeviceId)
     sizeBytes: metadataWinner.sizeBytes,
     contentSha256: metadataWinner.contentSha256,
     localPath: deleted ? null : local.localPath,
+    relativeLocation: deleted ? null : local.relativeLocation,
+    sourceAvailability: deleted ? 'unavailable' : local.sourceAvailability,
     addedAt: local.addedAt.isBefore(remote.addedAt) ? local.addedAt : remote.addedAt,
     updatedAt: _latest(local.updatedAt, remote.updatedAt),
     progressPercent: progressWinner.progressPercent,

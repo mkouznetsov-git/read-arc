@@ -4,10 +4,12 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
+import 'package:crypto/crypto.dart';
 import 'package:readarc/main.dart' as app;
 import 'package:readarc/models/book.dart';
 import 'package:readarc/models/manifest.dart';
 import 'package:readarc/services/storage_service.dart';
+import 'package:readarc/services/library_storage.dart';
 import 'package:readarc/services/sync/sync_service.dart';
 
 void main() {
@@ -28,20 +30,21 @@ void main() {
     await booksDirectory.create(recursive: true);
     final legacyBookFile = File('${booksDirectory.path}/legacy.txt');
     await legacyBookFile.writeAsString('preserved book payload', flush: true);
+    final legacySha = (await sha256.bind(legacyBookFile.openRead()).first).toString();
     final legacyBookmark = BookmarkRecord(
       id: 'legacy-bookmark',
-      bookId: 'legacy-book',
+      bookId: legacySha,
       label: 'Preserved bookmark',
       locator: 'paragraph:42',
       note: 'Migration must retain this note',
     );
     final legacyBook = BookRecord(
-      id: 'legacy-book',
+      id: legacySha,
       title: 'Preserved legacy book',
       fileName: 'legacy.txt',
       format: 'txt',
       sizeBytes: await legacyBookFile.length(),
-      contentSha256: 'legacy-sha256',
+      contentSha256: legacySha,
       localPath: legacyBookFile.path,
       progressPercent: 64,
       currentLocator: 'paragraph:42',
@@ -79,7 +82,12 @@ void main() {
     final manifestFile = File('${directory.path}/manifest.json');
     await manifestFile.writeAsString(jsonEncode(legacy), flush: true);
 
+    final userLibrary = Directory('${directory.path}/user-library');
+    await userLibrary.create();
     final storage = _SmokeStorage(directory);
+    await storage.configureLibraryRoot(
+      LibraryRoot(kind: LibraryRootKind.desktopPath, locator: userLibrary.path, displayName: 'Library'),
+    );
     final sync = SyncService(storage);
     await tester.pumpWidget(app.ReadArcApp(autoConnect: false, storage: storage, sync: sync, disposeSync: false));
     try {
@@ -105,8 +113,9 @@ void main() {
       expect(migrated.trustedDevices.map((device) => device.deviceId), containsAll(['legacy-device', 'paired-device']));
       expect(migrated.books, hasLength(1));
       final migratedBook = migrated.books.single;
-      expect(migratedBook.id, 'legacy-book');
-      expect(migratedBook.localPath, legacyBookFile.path);
+      expect(migratedBook.id, legacySha);
+      expect(migratedBook.localPath, isNull);
+      expect(migratedBook.relativeLocation, 'legacy.txt');
       expect(migratedBook.progressPercent, 64);
       expect(migratedBook.currentLocator, 'paragraph:42');
       expect(migratedBook.progressRevision.counter, 7);
@@ -129,7 +138,7 @@ void main() {
     }
   }, timeout: const Timeout(Duration(minutes: 2)));
 
-  testWidgets('ReadArc creates its initial manifest and opens the empty library', (tester) async {
+  testWidgets('ReadArc creates its initial manifest and asks for a user-owned library root', (tester) async {
     final errors = <FlutterErrorDetails>[];
     final previousHandler = FlutterError.onError;
     FlutterError.onError = errors.add;
@@ -154,7 +163,8 @@ void main() {
 
       expect(find.byType(MaterialApp), findsOneWidget);
       expect(find.byType(app.LibraryScreen), findsOneWidget);
-      expect(find.textContaining('Библиотека пока пуста'), findsOneWidget);
+      expect(find.text('Выберите корневую папку вашей библиотеки'), findsOneWidget);
+      expect(find.text('Выбрать или создать папку'), findsOneWidget);
       expect(find.textContaining('Не удалось загрузить библиотеку'), findsNothing);
       expect(errors, isEmpty, reason: 'ReadArc emitted a Flutter framework error during startup: $errors');
     } finally {
@@ -169,10 +179,6 @@ void main() {
 }
 
 class _SmokeStorage extends StorageService {
-  _SmokeStorage(this.directory);
-
-  final Directory directory;
-
-  @override
-  Future<Directory> appDir() async => directory;
+  _SmokeStorage(Directory directory)
+    : super(appDirectory: () async => directory, libraryStorageProvider: LocalDirectoryLibraryStorageProvider());
 }

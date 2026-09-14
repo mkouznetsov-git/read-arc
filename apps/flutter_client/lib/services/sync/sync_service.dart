@@ -4,12 +4,12 @@ import 'dart:io';
 import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart';
-import 'package:path/path.dart' as p;
 import 'package:uuid/uuid.dart';
 
 import '../../models/book.dart';
 import '../../models/manifest.dart';
 import '../../models/sync_settings.dart';
+import '../library_storage.dart';
 import '../storage_service.dart';
 import 'connection_manager.dart';
 import 'direct_transfer_server.dart';
@@ -1216,17 +1216,13 @@ class SyncService {
     if (bookId == null || transferId == null) return;
 
     final book = _findBook(local, bookId);
-    if (book == null || book.localPath == null) return;
-    final file = File(book.localPath!);
-    if (!await file.exists()) {
+    if (book == null || !book.hasLocalSource) return;
+    File file;
+    try {
+      file = await _storage.materializeBook(book);
+    } catch (_) {
       _appendLog('Файл больше не доступен на этом устройстве: ${book.title}');
-      try {
-        final updated = await _storage.removeLocalBookCopy(book.id);
-        _emitManifest(updated);
-        await broadcastLibrarySnapshot(reason: 'file_missing_on_source');
-      } catch (_) {
-        // Best effort: transfer must still be terminated for the requester.
-      }
+      await _reconcileMissingLocalSource(book.id, reason: 'file_missing_on_source');
       await _sendFileError(
         local,
         transferId,
@@ -1408,13 +1404,7 @@ class SyncService {
     String requestingDeviceId,
     String message,
   ) async {
-    try {
-      final updated = await _storage.removeLocalBookCopy(bookId);
-      _emitManifest(updated);
-      await broadcastLibrarySnapshot(reason: 'file_unavailable_on_source');
-    } catch (_) {
-      // The transfer error is more important than local manifest cleanup here.
-    }
+    await _reconcileMissingLocalSource(bookId, reason: 'file_unavailable_on_source');
     await _sendFileError(
       local,
       transferId,
@@ -1422,6 +1412,22 @@ class SyncService {
       requestingDeviceId,
       '$message. Файл больше недоступен на устройстве-источнике.',
     );
+  }
+
+  Future<void> _reconcileMissingLocalSource(String bookId, {required String reason}) async {
+    try {
+      if (await _storage.libraryRootStatus() != LibraryRootStatus.available) return;
+      await _storage.refreshLibrary(afterPending: true);
+      final updated = await _storage.loadManifest();
+      final current = updated.books.where((book) => book.id == bookId).firstOrNull;
+      // A materialized cache may have disappeared while the user-owned source
+      // remains intact. Only a successful root scan may remove availability.
+      if (current == null || current.hasLocalSource) return;
+      _emitManifest(updated);
+      await broadcastLibrarySnapshot(reason: reason);
+    } catch (_) {
+      // The transfer error is more important than best-effort reconciliation.
+    }
   }
 
   Future<void> _sendFileChunks({
@@ -1434,12 +1440,14 @@ class SyncService {
     required bool binaryTransfer,
   }) async {
     final book = _findBook(await _storage.loadManifest(), bookId);
-    if (book == null || book.localPath == null) {
+    if (book == null || !book.hasLocalSource) {
       await _sendFileError(local, transferId, bookId, requestingDeviceId, 'Файл не найден у источника');
       return;
     }
-    final file = File(book.localPath!);
-    if (!await file.exists()) {
+    File file;
+    try {
+      file = await _storage.materializeBook(book);
+    } catch (_) {
       await _handleSourceFileUnavailable(local, transferId, bookId, requestingDeviceId, 'Локальный файл отсутствует');
       return;
     }
@@ -1897,13 +1905,13 @@ class SyncService {
       return;
     }
 
-    final extension = session.format.isEmpty ? 'book' : session.format;
-    final destination = File(p.join((await _storage.booksDir()).path, '${session.expectedSha256}.$extension'));
-    if (await destination.exists()) await destination.delete();
-    await tempFile.rename(destination.path);
+    final current = _findBook(await _storage.loadManifest(), session.bookId);
+    if (current == null) {
+      await _failDownload(session, 'Metadata книги исчезли до завершения передачи');
+      return;
+    }
+    final manifest = await _storage.commitReceivedBook(book: current, verifiedFile: tempFile);
     await _fileTransferManager.markCompleted(session.bookId);
-
-    final manifest = await _storage.markBookDownloaded(bookId: session.bookId, localPath: destination.path);
     _emitManifest(manifest);
     _downloadsByTransferId.remove(session.transferId);
 

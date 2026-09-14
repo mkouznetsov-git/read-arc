@@ -93,6 +93,10 @@ if command -v codesign >/dev/null 2>&1; then
     echo "ERROR: packaged ReadArc.app lost its release entitlements." >&2
     exit 1
   fi
+  if ! grep -q '<key>com.apple.security.files.bookmarks.app-scope</key>' <<< "$signed_entitlements"; then
+    echo "ERROR: packaged ReadArc.app lost persistent security-scoped bookmark access." >&2
+    exit 1
+  fi
   if grep -q '<key>keychain-access-groups</key>' <<< "$signed_entitlements"; then
     echo "ERROR: ad-hoc ReadArc.app unexpectedly requires a Keychain Sharing provisioning profile." >&2
     exit 1
