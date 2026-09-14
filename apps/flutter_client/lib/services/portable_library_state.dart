@@ -13,27 +13,16 @@ const portableFormatRelativeLocation = '.readarc/format.json';
 const portableStateDirectory = '.readarc/state';
 const portableRecoveryDirectory = '.readarc/recovery';
 
-enum PortableLibraryDisposition {
-  empty,
-  currentAccount,
-  recoveryRequired,
-  incomplete,
-  unsupported,
-}
+enum PortableLibraryDisposition { empty, currentAccount, recoveryRequired, incomplete, unsupported }
 
 class PortableLibraryInspection {
-  const PortableLibraryInspection({
-    required this.disposition,
-    this.accountIds = const <String>[],
-    this.message,
-  });
+  const PortableLibraryInspection({required this.disposition, this.accountIds = const <String>[], this.message});
 
   final PortableLibraryDisposition disposition;
   final List<String> accountIds;
   final String? message;
 
-  bool get hasPortableState =>
-      disposition != PortableLibraryDisposition.empty;
+  bool get hasPortableState => disposition != PortableLibraryDisposition.empty;
 }
 
 class PortableStateException implements Exception {
@@ -45,8 +34,7 @@ class PortableStateException implements Exception {
 }
 
 class WrongRecoveryKeyException extends PortableStateException {
-  const WrongRecoveryKeyException()
-      : super('Recovery Key неверен или не подходит к этой библиотеке');
+  const WrongRecoveryKeyException() : super('Recovery Key неверен или не подходит к этой библиотеке');
 }
 
 class PortableStateRecoveryResult {
@@ -76,8 +64,7 @@ class RecoveryKeyMaterial {
 /// all conflict decisions to [mergeManifests]. Local paths, security-scoped
 /// bookmark bytes, SAF URIs and private keys never enter portable payloads.
 class PortableLibraryState {
-  PortableLibraryState(this._provider, {Random? random})
-      : _random = random ?? Random.secure();
+  PortableLibraryState(this._provider, {Random? random}) : _random = random ?? Random.secure();
 
   static const formatVersion = 1;
   static const snapshotDomain = 'readarc-portable-state-v1';
@@ -91,26 +78,12 @@ class PortableLibraryState {
   final Random _random;
   final AesGcm _aes = AesGcm.with256bits();
 
-  Future<PortableLibraryInspection> inspect(
-    LibraryRoot root, {
-    String? currentAccountId,
-  }) async {
-    final rawFormat = await _provider.readServiceFile(
-      root,
-      portableFormatRelativeLocation,
-    );
-    final stateFiles = await _provider.listServiceFiles(
-      root,
-      portableStateDirectory,
-    );
-    final recoveryFiles = await _provider.listServiceFiles(
-      root,
-      portableRecoveryDirectory,
-    );
+  Future<PortableLibraryInspection> inspect(LibraryRoot root, {String? currentAccountId}) async {
+    final rawFormat = await _provider.readServiceFile(root, portableFormatRelativeLocation);
+    final stateFiles = await _provider.listServiceFiles(root, portableStateDirectory);
+    final recoveryFiles = await _provider.listServiceFiles(root, portableRecoveryDirectory);
     if (rawFormat == null && stateFiles.isEmpty && recoveryFiles.isEmpty) {
-      return const PortableLibraryInspection(
-        disposition: PortableLibraryDisposition.empty,
-      );
+      return const PortableLibraryInspection(disposition: PortableLibraryDisposition.empty);
     }
     if (rawFormat == null) {
       return const PortableLibraryInspection(
@@ -135,8 +108,7 @@ class PortableLibraryState {
         message: 'Версия portable-state $version не поддерживается',
       );
     }
-    if (version != formatVersion ||
-        format['format'] != 'readarc-portable-library') {
+    if (version != formatVersion || format['format'] != 'readarc-portable-library') {
       return const PortableLibraryInspection(
         disposition: PortableLibraryDisposition.incomplete,
         message: 'Некорректный формат .readarc',
@@ -163,64 +135,39 @@ class PortableLibraryState {
       );
     }
     return PortableLibraryInspection(
-      disposition: currentAccountId != null &&
-              sorted.length == 1 &&
-              sorted.single == currentAccountId
+      disposition: currentAccountId != null && sorted.length == 1 && sorted.single == currentAccountId
           ? PortableLibraryDisposition.currentAccount
           : PortableLibraryDisposition.recoveryRequired,
       accountIds: sorted,
     );
   }
 
-  Future<bool> hasRecoveryEnvelope(
-    LibraryRoot root,
-    String accountId,
-  ) async {
-    final files = await _provider.listServiceFiles(
-      root,
-      portableRecoveryDirectory,
-    );
+  Future<bool> hasRecoveryEnvelope(LibraryRoot root, String accountId) async {
+    final files = await _provider.listServiceFiles(root, portableRecoveryDirectory);
     for (final path in files) {
       final header = await _readHeader(root, path);
-      if (header?['kind'] == 'recovery-envelope' &&
-          header?['accountId'] == accountId) {
+      if (header?['kind'] == 'recovery-envelope' && header?['accountId'] == accountId) {
         return true;
       }
     }
     return false;
   }
 
-  Future<void> bootstrap(
-    LibraryRoot root,
-    LibraryManifest manifest,
-  ) async {
+  Future<void> bootstrap(LibraryRoot root, LibraryManifest manifest) async {
     await _ensureFormat(root);
     await writeSnapshot(root, manifest);
   }
 
-  Future<void> writeSnapshot(
-    LibraryRoot root,
-    LibraryManifest manifest,
-  ) async {
+  Future<void> writeSnapshot(LibraryRoot root, LibraryManifest manifest) async {
     _validateAccountKey(manifest.accountEncryptionKey);
     await _ensureFormat(root);
     final namespace = _namespace(manifest.deviceId);
-    final current =
-        '$portableStateDirectory/$namespace/current';
+    final current = '$portableStateDirectory/$namespace/current';
     final currentHeader = await _readHeader(root, current);
-    final previousHeader = await _readHeader(
-      root,
-      current.replaceFirst(RegExp(r'current$'), 'previous'),
-    );
-    final currentGeneration =
-        (currentHeader?['generation'] as num?)?.toInt() ?? 0;
-    final previousGeneration =
-        (previousHeader?['generation'] as num?)?.toInt() ?? 0;
-    final generation =
-        (currentGeneration > previousGeneration
-                ? currentGeneration
-                : previousGeneration) +
-            1;
+    final previousHeader = await _readHeader(root, current.replaceFirst(RegExp(r'current$'), 'previous'));
+    final currentGeneration = (currentHeader?['generation'] as num?)?.toInt() ?? 0;
+    final previousGeneration = (previousHeader?['generation'] as num?)?.toInt() ?? 0;
+    final generation = (currentGeneration > previousGeneration ? currentGeneration : previousGeneration) + 1;
     final createdAt = DateTime.now().toUtc().toIso8601String();
     final header = <String, dynamic>{
       'formatVersion': formatVersion,
@@ -235,9 +182,7 @@ class PortableLibraryState {
       'createdAt': createdAt,
     };
     final encrypted = await _encryptJson(
-      payload: <String, dynamic>{
-        'manifest': manifest.toSyncJson(),
-      },
+      payload: <String, dynamic>{'manifest': manifest.toSyncJson()},
       inputKey: _decodeBase64Url(manifest.accountEncryptionKey),
       domain: snapshotDomain,
       accountId: manifest.accountId,
@@ -246,16 +191,11 @@ class PortableLibraryState {
     await _provider.publishServiceFile(
       root,
       current,
-      Uint8List.fromList(
-        utf8.encode(const JsonEncoder.withIndent(' ').convert(encrypted)),
-      ),
+      Uint8List.fromList(utf8.encode(const JsonEncoder.withIndent(' ').convert(encrypted))),
     );
   }
 
-  Future<LibraryManifest> mergeSnapshots({
-    required LibraryRoot root,
-    required LibraryManifest local,
-  }) async {
+  Future<LibraryManifest> mergeSnapshots({required LibraryRoot root, required LibraryManifest local}) async {
     final loaded = await _loadSnapshots(
       root: root,
       accountId: local.accountId,
@@ -276,19 +216,11 @@ class PortableLibraryState {
     );
   }
 
-  Future<RecoveryKeyMaterial> createRecoveryKey({
-    required LibraryRoot root,
-    required LibraryManifest manifest,
-  }) async {
+  Future<RecoveryKeyMaterial> createRecoveryKey({required LibraryRoot root, required LibraryManifest manifest}) async {
     final bytes = _randomBytes(32);
     final display = _encodeRecoveryKey(bytes);
     final keyId = _keyId(bytes);
-    await _writeRecoveryEnvelope(
-      root: root,
-      manifest: manifest,
-      recoveryKeyBytes: bytes,
-      keyId: keyId,
-    );
+    await _writeRecoveryEnvelope(root: root, manifest: manifest, recoveryKeyBytes: bytes, keyId: keyId);
     return RecoveryKeyMaterial(displayKey: display, keyId: keyId);
   }
 
@@ -308,8 +240,7 @@ class PortableLibraryState {
         ),
         probeOnly: true,
       );
-      return expectedAccountId == null ||
-          result.accountId == expectedAccountId;
+      return expectedAccountId == null || result.accountId == expectedAccountId;
     } on PortableStateException {
       return false;
     } on SecretBoxAuthenticationError {
@@ -326,37 +257,24 @@ class PortableLibraryState {
     bool probeOnly = false,
   }) async {
     final keyBytes = _decodeRecoveryKey(recoveryKey);
-    final recoveryFiles = await _provider.listServiceFiles(
-      root,
-      portableRecoveryDirectory,
-    );
-    final namespaces = _generationNamespaces(
-      recoveryFiles,
-      portableRecoveryDirectory,
-    );
+    final recoveryFiles = await _provider.listServiceFiles(root, portableRecoveryDirectory);
+    final namespaces = _generationNamespaces(recoveryFiles, portableRecoveryDirectory);
     if (namespaces.isEmpty) {
-      throw const PortableStateException(
-        'Recovery envelope не найден; нужен другой trusted device',
-      );
+      throw const PortableStateException('Recovery envelope не найден; нужен другой trusted device');
     }
 
     Map<String, dynamic>? recovered;
     Object? lastFailure;
     for (final namespace in namespaces) {
       for (final generationName in const <String>['current', 'previous']) {
-        final path =
-            '$portableRecoveryDirectory/$namespace/$generationName';
+        final path = '$portableRecoveryDirectory/$namespace/$generationName';
         final raw = await _provider.readServiceFile(root, path);
         if (raw == null) continue;
         try {
           final envelope = _jsonObject(raw, path);
           if (envelope['kind'] != 'recovery-envelope') continue;
           if (envelope['keyId']?.toString() != _keyId(keyBytes)) continue;
-          recovered = await _decryptJson(
-            envelope: envelope,
-            inputKey: keyBytes,
-            expectedDomain: recoveryDomain,
-          );
+          recovered = await _decryptJson(envelope: envelope, inputKey: keyBytes, expectedDomain: recoveryDomain);
           recovered['accountId'] = envelope['accountId'];
           break;
         } catch (error) {
@@ -371,12 +289,9 @@ class PortableLibraryState {
     }
 
     final accountId = recovered['accountId']?.toString().trim() ?? '';
-    final accountKey =
-        recovered['accountEncryptionKey']?.toString().trim() ?? '';
+    final accountKey = recovered['accountEncryptionKey']?.toString().trim() ?? '';
     if (accountId.isEmpty) {
-      throw const PortableStateException(
-        'Recovery envelope не содержит accountId',
-      );
+      throw const PortableStateException('Recovery envelope не содержит accountId');
     }
     _validateAccountKey(accountKey);
     if (probeOnly) {
@@ -393,9 +308,7 @@ class PortableLibraryState {
       name: freshInstallation.deviceName,
       role: 'owner',
       publicKey: freshInstallation.deviceSigningPublicKey,
-      keyFingerprint: _fingerprint(
-        freshInstallation.deviceSigningPublicKey,
-      ),
+      keyFingerprint: _fingerprint(freshInstallation.deviceSigningPublicKey),
     );
     var local = freshInstallation.copyWith(
       accountId: accountId,
@@ -405,23 +318,15 @@ class PortableLibraryState {
       logicalClock: 0,
       appliedOperationIds: const [],
     );
-    final snapshots = await _loadSnapshots(
-      root: root,
-      accountId: accountId,
-      accountEncryptionKey: accountKey,
-    );
+    final snapshots = await _loadSnapshots(root: root, accountId: accountId, accountEncryptionKey: accountKey);
     if (snapshots.isEmpty) {
-      throw const PortableStateException(
-        'Recovery envelope корректен, но ни один portable snapshot не читается',
-      );
+      throw const PortableStateException('Recovery envelope корректен, но ни один portable snapshot не читается');
     }
     for (final remote in snapshots) {
       local = mergeManifests(local, remote);
     }
     final devices = <TrustedDeviceRecord>[...local.trustedDevices];
-    final currentIndex = devices.indexWhere(
-      (device) => device.deviceId == freshInstallation.deviceId,
-    );
+    final currentIndex = devices.indexWhere((device) => device.deviceId == freshInstallation.deviceId);
     if (currentIndex < 0) {
       devices.add(currentTrust);
     } else {
@@ -432,10 +337,8 @@ class PortableLibraryState {
       accountEncryptionKey: accountKey,
       deviceId: freshInstallation.deviceId,
       deviceName: freshInstallation.deviceName,
-      deviceSigningPublicKey:
-          freshInstallation.deviceSigningPublicKey,
-      deviceSigningPrivateKey:
-          freshInstallation.deviceSigningPrivateKey,
+      deviceSigningPublicKey: freshInstallation.deviceSigningPublicKey,
+      deviceSigningPrivateKey: freshInstallation.deviceSigningPrivateKey,
       trustedDevices: devices,
     );
     return PortableStateRecoveryResult(
@@ -455,22 +358,12 @@ class PortableLibraryState {
     await _ensureFormat(root);
     _validateAccountKey(manifest.accountEncryptionKey);
     final namespace = _namespace(manifest.deviceId);
-    final current =
-        '$portableRecoveryDirectory/$namespace/current';
+    final current = '$portableRecoveryDirectory/$namespace/current';
     final currentHeader = await _readHeader(root, current);
-    final previousHeader = await _readHeader(
-      root,
-      current.replaceFirst(RegExp(r'current$'), 'previous'),
-    );
-    final currentGeneration =
-        (currentHeader?['generation'] as num?)?.toInt() ?? 0;
-    final previousGeneration =
-        (previousHeader?['generation'] as num?)?.toInt() ?? 0;
-    final generation =
-        (currentGeneration > previousGeneration
-                ? currentGeneration
-                : previousGeneration) +
-            1;
+    final previousHeader = await _readHeader(root, current.replaceFirst(RegExp(r'current$'), 'previous'));
+    final currentGeneration = (currentHeader?['generation'] as num?)?.toInt() ?? 0;
+    final previousGeneration = (previousHeader?['generation'] as num?)?.toInt() ?? 0;
+    final generation = (currentGeneration > previousGeneration ? currentGeneration : previousGeneration) + 1;
     final header = <String, dynamic>{
       'formatVersion': formatVersion,
       'kind': 'recovery-envelope',
@@ -484,37 +377,28 @@ class PortableLibraryState {
       'createdAt': DateTime.now().toUtc().toIso8601String(),
     };
     final encrypted = await _encryptJson(
-      payload: <String, dynamic>{
-        'accountEncryptionKey': manifest.accountEncryptionKey,
-      },
+      payload: <String, dynamic>{'accountEncryptionKey': manifest.accountEncryptionKey},
       inputKey: recoveryKeyBytes,
       domain: recoveryDomain,
       accountId: manifest.accountId,
       header: header,
     );
-    final bytes = Uint8List.fromList(
-      utf8.encode(const JsonEncoder.withIndent(' ').convert(encrypted)),
-    );
+    final bytes = Uint8List.fromList(utf8.encode(const JsonEncoder.withIndent(' ').convert(encrypted)));
     await _provider.publishServiceFile(root, current, bytes);
 
     // Authenticated read-after-publish: the key is shown to the user only after
     // the durable current generation can actually unwrap the account key.
     final published = await _provider.readServiceFile(root, current);
     if (published == null) {
-      throw const PortableStateException(
-        'Recovery envelope исчез после публикации',
-      );
+      throw const PortableStateException('Recovery envelope исчез после публикации');
     }
     final clear = await _decryptJson(
       envelope: _jsonObject(published, current),
       inputKey: recoveryKeyBytes,
       expectedDomain: recoveryDomain,
     );
-    if (clear['accountEncryptionKey'] !=
-        manifest.accountEncryptionKey) {
-      throw const PortableStateException(
-        'Recovery envelope не прошёл read-after-write verification',
-      );
+    if (clear['accountEncryptionKey'] != manifest.accountEncryptionKey) {
+      throw const PortableStateException('Recovery envelope не прошёл read-after-write verification');
     }
   }
 
@@ -524,22 +408,15 @@ class PortableLibraryState {
     required String accountEncryptionKey,
   }) async {
     _validateAccountKey(accountEncryptionKey);
-    final files = await _provider.listServiceFiles(
-      root,
-      portableStateDirectory,
-    );
-    final namespaces = _generationNamespaces(
-      files,
-      portableStateDirectory,
-    );
+    final files = await _provider.listServiceFiles(root, portableStateDirectory);
+    final namespaces = _generationNamespaces(files, portableStateDirectory);
     final result = <LibraryManifest>[];
     for (final namespace in namespaces) {
       Object? lastFailure;
       var hadCandidate = false;
       LibraryManifest? valid;
       for (final generationName in const <String>['current', 'previous']) {
-        final path =
-            '$portableStateDirectory/$namespace/$generationName';
+        final path = '$portableStateDirectory/$namespace/$generationName';
         final raw = await _provider.readServiceFile(root, path);
         if (raw == null) continue;
         hadCandidate = true;
@@ -553,32 +430,19 @@ class PortableLibraryState {
           );
           final rawManifest = clear['manifest'];
           if (rawManifest is! Map) {
-            throw const PortableStateException(
-              'Portable snapshot не содержит manifest',
-            );
+            throw const PortableStateException('Portable snapshot не содержит manifest');
           }
-          final decoded = LibraryManifest.fromJson(
-            Map<String, dynamic>.from(rawManifest),
-          );
+          final decoded = LibraryManifest.fromJson(Map<String, dynamic>.from(rawManifest));
           if (decoded.accountId != accountId) {
-            throw const PortableStateException(
-              'Authenticated snapshot accountId mismatch',
-            );
+            throw const PortableStateException('Authenticated snapshot accountId mismatch');
           }
-          if (decoded.deviceId !=
-                  envelope['originatingDeviceId'] ||
+          if (decoded.deviceId != envelope['originatingDeviceId'] ||
               _namespace(decoded.deviceId) != namespace ||
-              decoded.logicalClock !=
-                  (envelope['revision'] as num?)?.toInt()) {
-            throw const PortableStateException(
-              'Authenticated snapshot identity/revision mismatch',
-            );
+              decoded.logicalClock != (envelope['revision'] as num?)?.toInt()) {
+            throw const PortableStateException('Authenticated snapshot identity/revision mismatch');
           }
-          if (decoded.deviceSigningPrivateKey.isNotEmpty ||
-              decoded.accountEncryptionKey.isNotEmpty) {
-            throw const PortableStateException(
-              'Portable snapshot содержит запрещённые secrets',
-            );
+          if (decoded.deviceSigningPrivateKey.isNotEmpty || decoded.accountEncryptionKey.isNotEmpty) {
+            throw const PortableStateException('Portable snapshot содержит запрещённые secrets');
           }
           valid = decoded;
           break;
@@ -589,9 +453,7 @@ class PortableLibraryState {
       if (valid != null) {
         result.add(valid);
       } else if (hadCandidate && lastFailure != null) {
-        throw PortableStateException(
-          'Нет валидной generation в state/$namespace: $lastFailure',
-        );
+        throw PortableStateException('Нет валидной generation в state/$namespace: $lastFailure');
       }
     }
     result.sort((a, b) => a.deviceId.compareTo(b.deviceId));
@@ -605,11 +467,7 @@ class PortableLibraryState {
     required String accountId,
     required Map<String, dynamic> header,
   }) async {
-    final wrappingKey = await _deriveKey(
-      inputKey,
-      domain: domain,
-      accountId: accountId,
-    );
+    final wrappingKey = await _deriveKey(inputKey, domain: domain, accountId: accountId);
     final nonce = _randomBytes(12);
     final aad = utf8.encode(_aad(header));
     final box = await _aes.encrypt(
@@ -633,31 +491,20 @@ class PortableLibraryState {
   }) async {
     final version = (envelope['formatVersion'] as num?)?.toInt();
     if (version != formatVersion) {
-      throw PortableStateException(
-        'Неподдерживаемая generation version $version',
-      );
+      throw PortableStateException('Неподдерживаемая generation version $version');
     }
     final domain = envelope['domain']?.toString() ?? '';
     if (domain != expectedDomain) {
-      throw const PortableStateException(
-        'Portable crypto domain mismatch',
-      );
+      throw const PortableStateException('Portable crypto domain mismatch');
     }
-    if (envelope['algorithm'] != algorithm ||
-        envelope['derivation'] != derivation) {
-      throw const PortableStateException(
-        'Неподдерживаемый portable crypto algorithm',
-      );
+    if (envelope['algorithm'] != algorithm || envelope['derivation'] != derivation) {
+      throw const PortableStateException('Неподдерживаемый portable crypto algorithm');
     }
     final accountId = envelope['accountId']?.toString().trim() ?? '';
     if (accountId.isEmpty) {
       throw const PortableStateException('Portable accountId пуст');
     }
-    final wrappingKey = await _deriveKey(
-      inputKey,
-      domain: domain,
-      accountId: accountId,
-    );
+    final wrappingKey = await _deriveKey(inputKey, domain: domain, accountId: accountId);
     final clear = await _aes.decrypt(
       SecretBox(
         _decodeBase64Url(envelope['ciphertext']?.toString() ?? ''),
@@ -669,18 +516,12 @@ class PortableLibraryState {
     );
     final decoded = jsonDecode(utf8.decode(clear));
     if (decoded is! Map) {
-      throw const PortableStateException(
-        'Portable encrypted payload не является JSON object',
-      );
+      throw const PortableStateException('Portable encrypted payload не является JSON object');
     }
     return Map<String, dynamic>.from(decoded);
   }
 
-  Future<List<int>> _deriveKey(
-    List<int> inputKey, {
-    required String domain,
-    required String accountId,
-  }) async {
+  Future<List<int>> _deriveKey(List<int> inputKey, {required String domain, required String accountId}) async {
     final hkdf = Hkdf(hmac: Hmac.sha256(), outputLength: 32);
     final key = await hkdf.deriveKey(
       secretKey: SecretKey(inputKey),
@@ -704,24 +545,16 @@ class PortableLibraryState {
       if (source.containsKey('revision')) 'revision',
       'createdAt',
     ];
-    return keys
-        .map((key) => '$key=${source[key]?.toString() ?? ''}')
-        .join('\n');
+    return keys.map((key) => '$key=${source[key]?.toString() ?? ''}').join('\n');
   }
 
   Future<void> _ensureFormat(LibraryRoot root) async {
-    final existing = await _provider.readServiceFile(
-      root,
-      portableFormatRelativeLocation,
-    );
+    final existing = await _provider.readServiceFile(root, portableFormatRelativeLocation);
     if (existing != null) {
       final decoded = _jsonObject(existing, portableFormatRelativeLocation);
       final version = (decoded['formatVersion'] as num?)?.toInt();
-      if (version != formatVersion ||
-          decoded['format'] != 'readarc-portable-library') {
-        throw PortableStateException(
-          'Нельзя перезаписать неизвестный .readarc format version $version',
-        );
+      if (version != formatVersion || decoded['format'] != 'readarc-portable-library') {
+        throw PortableStateException('Нельзя перезаписать неизвестный .readarc format version $version');
       }
       return;
     }
@@ -735,33 +568,22 @@ class PortableLibraryState {
       await _provider.publishServiceFile(
         root,
         portableFormatRelativeLocation,
-        Uint8List.fromList(
-          utf8.encode(
-            const JsonEncoder.withIndent(' ').convert(payload),
-          ),
-        ),
+        Uint8List.fromList(utf8.encode(const JsonEncoder.withIndent(' ').convert(payload))),
         preservePrevious: false,
       );
     } catch (_) {
       // Two installations may bootstrap the same shared root concurrently.
       // format.json is immutable, so accept the winner only after validation.
-      final raced = await _provider.readServiceFile(
-        root,
-        portableFormatRelativeLocation,
-      );
+      final raced = await _provider.readServiceFile(root, portableFormatRelativeLocation);
       if (raced == null) rethrow;
       final decoded = _jsonObject(raced, portableFormatRelativeLocation);
-      if (decoded['format'] != 'readarc-portable-library' ||
-          decoded['formatVersion'] != formatVersion) {
+      if (decoded['format'] != 'readarc-portable-library' || decoded['formatVersion'] != formatVersion) {
         rethrow;
       }
     }
   }
 
-  Future<Map<String, dynamic>?> _readHeader(
-    LibraryRoot root,
-    String path,
-  ) async {
+  Future<Map<String, dynamic>?> _readHeader(LibraryRoot root, String path) async {
     final raw = await _provider.readServiceFile(root, path);
     if (raw == null) return null;
     try {
@@ -779,10 +601,7 @@ class PortableLibraryState {
     return Map<String, dynamic>.from(decoded);
   }
 
-  Set<String> _generationNamespaces(
-    Iterable<String> files,
-    String prefix,
-  ) {
+  Set<String> _generationNamespaces(Iterable<String> files, String prefix) {
     final result = <String>{};
     for (final file in files) {
       final segments = file.split('/');
@@ -797,8 +616,7 @@ class PortableLibraryState {
 
   String _namespace(String deviceId) {
     final normalized = deviceId.trim();
-    if (normalized.isEmpty ||
-        !RegExp(r'^[A-Za-z0-9._-]+$').hasMatch(normalized)) {
+    if (normalized.isEmpty || !RegExp(r'^[A-Za-z0-9._-]+$').hasMatch(normalized)) {
       return _base64Url(utf8.encode(normalized));
     }
     return normalized;
@@ -807,49 +625,31 @@ class PortableLibraryState {
   void _validateAccountKey(String raw) {
     final bytes = _decodeBase64Url(raw);
     if (bytes.length != 32) {
-      throw const PortableStateException(
-        'Некорректный account encryption key',
-      );
+      throw const PortableStateException('Некорректный account encryption key');
     }
   }
 
-  List<int> _randomBytes(int length) =>
-      List<int>.generate(length, (_) => _random.nextInt(256));
+  List<int> _randomBytes(int length) => List<int>.generate(length, (_) => _random.nextInt(256));
 
   String _encodeRecoveryKey(List<int> secret) {
-    final checksum = crypto.sha256
-        .convert(<int>[...utf8.encode(recoveryDomain), ...secret])
-        .bytes
-        .take(4);
+    final checksum = crypto.sha256.convert(<int>[...utf8.encode(recoveryDomain), ...secret]).bytes.take(4);
     final encoded = _base32(<int>[...secret, ...checksum]);
     final groups = <String>[];
     for (var offset = 0; offset < encoded.length; offset += 4) {
-      groups.add(
-        encoded.substring(
-          offset,
-          min(offset + 4, encoded.length),
-        ),
-      );
+      groups.add(encoded.substring(offset, min(offset + 4, encoded.length)));
     }
     return '$_recoveryPrefix-${groups.join('-')}';
   }
 
   List<int> _decodeRecoveryKey(String display) {
-    final normalized =
-        display.toUpperCase().replaceAll(RegExp(r'[^A-Z0-9]'), '');
+    final normalized = display.toUpperCase().replaceAll(RegExp(r'[^A-Z0-9]'), '');
     if (!normalized.startsWith(_recoveryPrefix)) {
       throw const WrongRecoveryKeyException();
     }
-    final decoded = _base32Decode(
-      normalized.substring(_recoveryPrefix.length),
-    );
+    final decoded = _base32Decode(normalized.substring(_recoveryPrefix.length));
     if (decoded.length != 36) throw const WrongRecoveryKeyException();
     final secret = decoded.sublist(0, 32);
-    final expected = crypto.sha256
-        .convert(<int>[...utf8.encode(recoveryDomain), ...secret])
-        .bytes
-        .take(4)
-        .toList();
+    final expected = crypto.sha256.convert(<int>[...utf8.encode(recoveryDomain), ...secret]).bytes.take(4).toList();
     final actual = decoded.sublist(32);
     var difference = 0;
     for (var index = 0; index < expected.length; index++) {
@@ -892,25 +692,20 @@ class PortableLibraryState {
     return output;
   }
 
-  String _keyId(List<int> bytes) =>
-      _base64Url(crypto.sha256.convert(bytes).bytes).substring(0, 16);
+  String _keyId(List<int> bytes) => _base64Url(crypto.sha256.convert(bytes).bytes).substring(0, 16);
 
   String _fingerprint(String publicKey) {
     if (publicKey.trim().isEmpty) return '';
-    final value = _base64Url(
-      crypto.sha256.convert(utf8.encode(publicKey.trim())).bytes,
-    );
+    final value = _base64Url(crypto.sha256.convert(utf8.encode(publicKey.trim())).bytes);
     return '${value.substring(0, 8)}…${value.substring(value.length - 8)}';
   }
 
-  String _base64Url(List<int> bytes) =>
-      base64UrlEncode(bytes).replaceAll('=', '');
+  String _base64Url(List<int> bytes) => base64UrlEncode(bytes).replaceAll('=', '');
 
   List<int> _decodeBase64Url(String raw) {
     final normalized = raw.trim();
     if (normalized.isEmpty) return const <int>[];
-    final padded =
-        normalized.padRight(normalized.length + ((4 - normalized.length % 4) % 4), '=');
+    final padded = normalized.padRight(normalized.length + ((4 - normalized.length % 4) % 4), '=');
     try {
       return base64Url.decode(padded);
     } on FormatException {

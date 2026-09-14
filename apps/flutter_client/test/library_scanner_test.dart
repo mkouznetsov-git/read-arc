@@ -284,30 +284,20 @@ class _CountingProvider implements LibraryStorageProvider {
   Future<File> materialize(LibraryRoot root, LibraryEntry entry, Directory cacheDirectory) =>
       delegate.materialize(root, entry, cacheDirectory);
   @override
-  Future<LibraryRootStatus> status(LibraryRoot root) =>
-      delegate.status(root);
+  Future<LibraryRootStatus> status(LibraryRoot root) => delegate.status(root);
   @override
-  Future<Uint8List?> readServiceFile(
-    LibraryRoot root,
-    String relativeLocation,
-  ) => delegate.readServiceFile(root, relativeLocation);
+  Future<Uint8List?> readServiceFile(LibraryRoot root, String relativeLocation) =>
+      delegate.readServiceFile(root, relativeLocation);
   @override
-  Future<List<String>> listServiceFiles(
-    LibraryRoot root,
-    String relativeDirectory,
-  ) => delegate.listServiceFiles(root, relativeDirectory);
+  Future<List<String>> listServiceFiles(LibraryRoot root, String relativeDirectory) =>
+      delegate.listServiceFiles(root, relativeDirectory);
   @override
   Future<void> publishServiceFile(
     LibraryRoot root,
     String relativeLocation,
     Uint8List bytes, {
     bool preservePrevious = true,
-  }) => delegate.publishServiceFile(
-    root,
-    relativeLocation,
-    bytes,
-    preservePrevious: preservePrevious,
-  );
+  }) => delegate.publishServiceFile(root, relativeLocation, bytes, preservePrevious: preservePrevious);
 }
 
 class _UnavailableProvider implements LibraryStorageProvider {

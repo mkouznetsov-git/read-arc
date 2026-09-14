@@ -19,17 +19,11 @@ void main() {
     late LibraryRoot libraryRoot;
 
     setUp(() async {
-      temp = await Directory.systemTemp.createTemp(
-        'readarc-portable-state-',
-      );
+      temp = await Directory.systemTemp.createTemp('readarc-portable-state-');
       root = Directory('${temp.path}/library');
       await root.create();
       provider = LocalDirectoryLibraryStorageProvider();
-      libraryRoot = LibraryRoot(
-        kind: LibraryRootKind.desktopPath,
-        locator: root.path,
-        displayName: 'Library',
-      );
+      libraryRoot = LibraryRoot(kind: LibraryRootKind.desktopPath, locator: root.path, displayName: 'Library');
     });
 
     tearDown(() async {
@@ -38,25 +32,13 @@ void main() {
 
     test('snapshot is encrypted, secret-free and uses fresh nonce', () async {
       final portable = PortableLibraryState(provider);
-      final manifest = _manifest(
-        deviceId: 'device-a',
-        privateKey: 'PRIVATE-DEVICE-A',
-      );
+      final manifest = _manifest(deviceId: 'device-a', privateKey: 'PRIVATE-DEVICE-A');
       await portable.writeSnapshot(libraryRoot, manifest);
-      final first = jsonDecode(
-        await File(
-          '${root.path}/.readarc/state/device-a/current',
-        ).readAsString(),
-      ) as Map<String, dynamic>;
-      await portable.writeSnapshot(
-        libraryRoot,
-        manifest.copyWith(logicalClock: 2),
-      );
-      final second = jsonDecode(
-        await File(
-          '${root.path}/.readarc/state/device-a/current',
-        ).readAsString(),
-      ) as Map<String, dynamic>;
+      final first =
+          jsonDecode(await File('${root.path}/.readarc/state/device-a/current').readAsString()) as Map<String, dynamic>;
+      await portable.writeSnapshot(libraryRoot, manifest.copyWith(logicalClock: 2));
+      final second =
+          jsonDecode(await File('${root.path}/.readarc/state/device-a/current').readAsString()) as Map<String, dynamic>;
       final all = await _readReadArc(root);
       expect(all, isNot(contains(manifest.accountEncryptionKey)));
       expect(all, isNot(contains(manifest.deviceSigningPrivateKey)));
@@ -68,28 +50,13 @@ void main() {
 
     test('current corruption falls back to previous generation', () async {
       final portable = PortableLibraryState(provider);
-      final initial = _manifest(
-        deviceId: 'device-a',
-        progress: 41,
-      );
+      final initial = _manifest(deviceId: 'device-a', progress: 41);
       await portable.writeSnapshot(libraryRoot, initial);
-      await portable.writeSnapshot(
-        libraryRoot,
-        initial.copyWith(logicalClock: 9),
-      );
-      await File(
-        '${root.path}/.readarc/state/device-a/current',
-      ).writeAsString('truncated', flush: true);
+      await portable.writeSnapshot(libraryRoot, initial.copyWith(logicalClock: 9));
+      await File('${root.path}/.readarc/state/device-a/current').writeAsString('truncated', flush: true);
 
-      final fresh = _manifest(
-        deviceId: 'device-c',
-        privateKey: 'NEW-PRIVATE',
-        books: const [],
-      );
-      final merged = await portable.mergeSnapshots(
-        root: libraryRoot,
-        local: fresh,
-      );
+      final fresh = _manifest(deviceId: 'device-c', privateKey: 'NEW-PRIVATE', books: const []);
+      final merged = await portable.mergeSnapshots(root: libraryRoot, local: fresh);
       expect(merged.books.single.progressPercent, 41);
       expect(merged.deviceId, 'device-c');
       expect(merged.deviceSigningPrivateKey, 'NEW-PRIVATE');
@@ -101,15 +68,10 @@ void main() {
       await portable.writeSnapshot(libraryRoot, manifest);
       await portable.writeSnapshot(libraryRoot, manifest);
       for (final name in const ['current', 'previous']) {
-        final file = File(
-          '${root.path}/.readarc/state/device-a/$name',
-        );
-        final decoded =
-            jsonDecode(await file.readAsString()) as Map<String, dynamic>;
+        final file = File('${root.path}/.readarc/state/device-a/$name');
+        final decoded = jsonDecode(await file.readAsString()) as Map<String, dynamic>;
         final ciphertext = decoded['ciphertext'] as String;
-        decoded['ciphertext'] =
-            (ciphertext.startsWith('A') ? 'B' : 'A') +
-            ciphertext.substring(1);
+        decoded['ciphertext'] = (ciphertext.startsWith('A') ? 'B' : 'A') + ciphertext.substring(1);
         await file.writeAsString(jsonEncode(decoded), flush: true);
       }
       await expectLater(
@@ -123,26 +85,10 @@ void main() {
 
     test('two installations never overwrite each namespace', () async {
       final portable = PortableLibraryState(provider);
-      await portable.writeSnapshot(
-        libraryRoot,
-        _manifest(deviceId: 'device-a', progress: 10),
-      );
-      await portable.writeSnapshot(
-        libraryRoot,
-        _manifest(deviceId: 'device-b', progress: 80),
-      );
-      expect(
-        await File(
-          '${root.path}/.readarc/state/device-a/current',
-        ).exists(),
-        isTrue,
-      );
-      expect(
-        await File(
-          '${root.path}/.readarc/state/device-b/current',
-        ).exists(),
-        isTrue,
-      );
+      await portable.writeSnapshot(libraryRoot, _manifest(deviceId: 'device-a', progress: 10));
+      await portable.writeSnapshot(libraryRoot, _manifest(deviceId: 'device-b', progress: 80));
+      expect(await File('${root.path}/.readarc/state/device-a/current').exists(), isTrue);
+      expect(await File('${root.path}/.readarc/state/device-b/current').exists(), isTrue);
       final merged = await portable.mergeSnapshots(
         root: libraryRoot,
         local: _manifest(deviceId: 'device-c', books: const []),
@@ -152,59 +98,36 @@ void main() {
 
     test('duplicate snapshot merge is idempotent', () async {
       final portable = PortableLibraryState(provider);
-      await portable.writeSnapshot(
-        libraryRoot,
-        _manifest(deviceId: 'device-a', progress: 55),
-      );
+      await portable.writeSnapshot(libraryRoot, _manifest(deviceId: 'device-a', progress: 55));
       final fresh = _manifest(deviceId: 'device-c', books: const []);
-      final once = await portable.mergeSnapshots(
-        root: libraryRoot,
-        local: fresh,
-      );
-      final twice = await portable.mergeSnapshots(
-        root: libraryRoot,
-        local: once,
-      );
+      final once = await portable.mergeSnapshots(root: libraryRoot, local: fresh);
+      final twice = await portable.mergeSnapshots(root: libraryRoot, local: once);
       expect(twice.books.single.progressPercent, 55);
       expect(twice.books.single.bookmarks.length, 2);
     });
 
-    test('stale portable progress cannot roll back local revision',
-        () async {
+    test('stale portable progress cannot roll back local revision', () async {
       final portable = PortableLibraryState(provider);
-      await portable.writeSnapshot(
-        libraryRoot,
-        _manifest(deviceId: 'device-a', progress: 10),
-      );
+      await portable.writeSnapshot(libraryRoot, _manifest(deviceId: 'device-a', progress: 10));
       final base = _manifest(deviceId: 'device-c');
       final localBook = base.books.single.copyWith(
         progressPercent: 91,
         currentLocator: 'epub:new',
-        progressRevision: const SyncRevision(
-          counter: 20,
-          deviceId: 'device-c',
-        ),
+        progressRevision: const SyncRevision(counter: 20, deviceId: 'device-c'),
       );
       final merged = await portable.mergeSnapshots(
         root: libraryRoot,
-        local: base.copyWith(
-          books: <BookRecord>[localBook],
-          logicalClock: 20,
-        ),
+        local: base.copyWith(books: <BookRecord>[localBook], logicalClock: 20),
       );
       expect(merged.books.single.progressPercent, 91);
       expect(merged.books.single.currentLocator, 'epub:new');
     });
 
-    test('interrupted Recovery Key rotation leaves old key valid',
-        () async {
+    test('interrupted Recovery Key rotation leaves old key valid', () async {
       var fail = false;
       final faulting = LocalDirectoryLibraryStorageProvider(
         afterServiceStaged: (file) async {
-          if (fail &&
-              file.path.contains(
-                '${Platform.pathSeparator}recovery${Platform.pathSeparator}',
-              )) {
+          if (fail && file.path.contains('${Platform.pathSeparator}recovery${Platform.pathSeparator}')) {
             throw StateError('simulated rotation interruption');
           }
         },
@@ -212,18 +135,9 @@ void main() {
       final portable = PortableLibraryState(faulting);
       final manifest = _manifest(deviceId: 'device-a');
       await portable.writeSnapshot(libraryRoot, manifest);
-      final oldKey = await portable.createRecoveryKey(
-        root: libraryRoot,
-        manifest: manifest,
-      );
+      final oldKey = await portable.createRecoveryKey(root: libraryRoot, manifest: manifest);
       fail = true;
-      await expectLater(
-        portable.createRecoveryKey(
-          root: libraryRoot,
-          manifest: manifest,
-        ),
-        throwsStateError,
-      );
+      await expectLater(portable.createRecoveryKey(root: libraryRoot, manifest: manifest), throwsStateError);
       fail = false;
       expect(
         await portable.verifyRecoveryKey(
@@ -239,10 +153,7 @@ void main() {
       final portable = PortableLibraryState(provider);
       final manifest = _manifest(deviceId: 'device-a');
       await portable.writeSnapshot(libraryRoot, manifest);
-      final recovery = await portable.createRecoveryKey(
-        root: libraryRoot,
-        manifest: manifest,
-      );
+      final recovery = await portable.createRecoveryKey(root: libraryRoot, manifest: manifest);
       final raw = await _readReadArc(root);
       expect(raw, isNot(contains(recovery.displayKey)));
       expect(raw, isNot(contains(manifest.accountEncryptionKey)));
@@ -257,46 +168,24 @@ void main() {
 
       final otherRoot = Directory('${temp.path}/other');
       await otherRoot.create();
-      final other = LibraryRoot(
-        kind: LibraryRootKind.desktopPath,
-        locator: otherRoot.path,
-        displayName: 'Other',
-      );
-      final wrong = await portable.createRecoveryKey(
-        root: other,
-        manifest: manifest,
-      );
+      final other = LibraryRoot(kind: LibraryRootKind.desktopPath, locator: otherRoot.path, displayName: 'Other');
+      final wrong = await portable.createRecoveryKey(root: other, manifest: manifest);
       await expectLater(
         portable.recover(
           root: libraryRoot,
           recoveryKey: wrong.displayKey,
-          freshInstallation: _manifest(
-            deviceId: 'fresh-device',
-            privateKey: 'FRESH-PRIVATE',
-            books: const [],
-          ),
+          freshInstallation: _manifest(deviceId: 'fresh-device', privateKey: 'FRESH-PRIVATE', books: const []),
         ),
         throwsA(isA<WrongRecoveryKeyException>()),
       );
     });
 
-    test('authenticated recovery preserves account but not device identity',
-        () async {
+    test('authenticated recovery preserves account but not device identity', () async {
       final portable = PortableLibraryState(provider);
-      final old = _manifest(
-        deviceId: 'device-a',
-        privateKey: 'OLD-PRIVATE',
-      );
+      final old = _manifest(deviceId: 'device-a', privateKey: 'OLD-PRIVATE');
       await portable.writeSnapshot(libraryRoot, old);
-      final recovery = await portable.createRecoveryKey(
-        root: libraryRoot,
-        manifest: old,
-      );
-      final fresh = _manifest(
-        deviceId: 'device-new',
-        privateKey: 'NEW-PRIVATE',
-        books: const [],
-      );
+      final recovery = await portable.createRecoveryKey(root: libraryRoot, manifest: old);
+      final fresh = _manifest(deviceId: 'device-new', privateKey: 'NEW-PRIVATE', books: const []);
       final recovered = await portable.recover(
         root: libraryRoot,
         recoveryKey: recovery.displayKey,
@@ -305,17 +194,10 @@ void main() {
       expect(recovered.accountId, old.accountId);
       expect(recovered.accountEncryptionKey, old.accountEncryptionKey);
       expect(recovered.manifest.deviceId, 'device-new');
+      expect(recovered.manifest.deviceSigningPrivateKey, 'NEW-PRIVATE');
+      expect(recovered.manifest.deviceSigningPrivateKey, isNot('OLD-PRIVATE'));
       expect(
-        recovered.manifest.deviceSigningPrivateKey,
-        'NEW-PRIVATE',
-      );
-      expect(
-        recovered.manifest.deviceSigningPrivateKey,
-        isNot('OLD-PRIVATE'),
-      );
-      expect(
-        recovered.manifest.trustedDevices
-            .map((device) => device.deviceId),
+        recovered.manifest.trustedDevices.map((device) => device.deviceId),
         containsAll(<String>['device-a', 'device-new']),
       );
     });
@@ -331,13 +213,7 @@ void main() {
       final first = _manifest(deviceId: 'device-a', progress: 12);
       await portable.writeSnapshot(libraryRoot, first);
       fail = true;
-      await expectLater(
-        portable.writeSnapshot(
-          libraryRoot,
-          first.copyWith(logicalClock: 10),
-        ),
-        throwsStateError,
-      );
+      await expectLater(portable.writeSnapshot(libraryRoot, first.copyWith(logicalClock: 10)), throwsStateError);
       fail = false;
       final merged = await portable.mergeSnapshots(
         root: libraryRoot,
@@ -350,10 +226,7 @@ void main() {
       final portable = PortableLibraryState(provider);
       await root.delete(recursive: true);
       await expectLater(
-        portable.writeSnapshot(
-          libraryRoot,
-          _manifest(deviceId: 'device-a'),
-        ),
+        portable.writeSnapshot(libraryRoot, _manifest(deviceId: 'device-a')),
         throwsA(isA<LibraryRootAccessException>()),
       );
       expect(await root.exists(), isFalse);
@@ -363,52 +236,28 @@ void main() {
       final format = File('${root.path}/.readarc/format.json');
       await format.parent.create(recursive: true);
       await format.writeAsString(
-        jsonEncode(<String, dynamic>{
-          'format': 'readarc-portable-library',
-          'formatVersion': 99,
-        }),
+        jsonEncode(<String, dynamic>{'format': 'readarc-portable-library', 'formatVersion': 99}),
       );
-      var inspected = await PortableLibraryState(provider).inspect(
-        libraryRoot,
-      );
-      expect(
-        inspected.disposition,
-        PortableLibraryDisposition.unsupported,
-      );
+      var inspected = await PortableLibraryState(provider).inspect(libraryRoot);
+      expect(inspected.disposition, PortableLibraryDisposition.unsupported);
 
       await format.delete();
-      await File('${root.path}/.readarc/state/device-a/current')
-          .create(recursive: true);
-      inspected = await PortableLibraryState(provider).inspect(
-        libraryRoot,
-      );
-      expect(
-        inspected.disposition,
-        PortableLibraryDisposition.incomplete,
-      );
+      await File('${root.path}/.readarc/state/device-a/current').create(recursive: true);
+      inspected = await PortableLibraryState(provider).inspect(libraryRoot);
+      expect(inspected.disposition, PortableLibraryDisposition.incomplete);
     });
   });
 
-  test('pairing account identity unlocks portable snapshot merge',
-      () async {
-    final temp = await Directory.systemTemp.createTemp(
-      'readarc-pairing-recovery-',
-    );
+  test('pairing account identity unlocks portable snapshot merge', () async {
+    final temp = await Directory.systemTemp.createTemp('readarc-pairing-recovery-');
     try {
       final root = Directory('${temp.path}/library');
       final sandbox = Directory('${temp.path}/sandbox');
       await root.create();
-      final rootHandle = LibraryRoot(
-        kind: LibraryRootKind.desktopPath,
-        locator: root.path,
-        displayName: 'Library',
-      );
+      final rootHandle = LibraryRoot(kind: LibraryRootKind.desktopPath, locator: root.path, displayName: 'Library');
       final provider = LocalDirectoryLibraryStorageProvider();
       final portable = PortableLibraryState(provider);
-      final owner = _manifest(
-        deviceId: 'owner-device',
-        progress: 77,
-      );
+      final owner = _manifest(deviceId: 'owner-device', progress: 77);
       await portable.writeSnapshot(rootHandle, owner);
 
       final storage = StorageService(
@@ -416,10 +265,7 @@ void main() {
         secretStore: _MemorySecretStore(),
         libraryStorageProvider: provider,
       );
-      await storage.configureLibraryRoot(
-        rootHandle,
-        bootstrapPortableState: false,
-      );
+      await storage.configureLibraryRoot(rootHandle, bootstrapPortableState: false);
       final fresh = await storage.loadManifest();
       await storage.replaceAccountFromPairing(
         accountId: owner.accountId,
@@ -428,14 +274,10 @@ void main() {
         ownerDeviceName: owner.deviceName,
         ownerDevicePublicKey: owner.deviceSigningPublicKey,
       );
-      final recovered =
-          await storage.recoverPortableStateAfterPairing();
+      final recovered = await storage.recoverPortableStateAfterPairing();
       expect(recovered.accountId, owner.accountId);
       expect(recovered.deviceId, fresh.deviceId);
-      expect(
-        recovered.deviceSigningPrivateKey,
-        fresh.deviceSigningPrivateKey,
-      );
+      expect(recovered.deviceSigningPrivateKey, fresh.deviceSigningPrivateKey);
       expect(recovered.books.single.progressPercent, 77);
       await storage.dispose();
     } finally {
@@ -443,11 +285,8 @@ void main() {
     }
   });
 
-  test('complete sandbox and secure-store loss recovers from LibraryRoot',
-      () async {
-    final temp = await Directory.systemTemp.createTemp(
-      'readarc-reinstall-recovery-',
-    );
+  test('complete sandbox and secure-store loss recovers from LibraryRoot', () async {
+    final temp = await Directory.systemTemp.createTemp('readarc-reinstall-recovery-');
     try {
       final root = Directory('${temp.path}/library');
       final sandboxA = Directory('${temp.path}/sandbox-a');
@@ -455,11 +294,7 @@ void main() {
       await root.create();
       final source = File('${root.path}/book.txt');
       await source.writeAsString('portable book identity', flush: true);
-      final rootHandle = LibraryRoot(
-        kind: LibraryRootKind.desktopPath,
-        locator: root.path,
-        displayName: 'Library',
-      );
+      final rootHandle = LibraryRoot(kind: LibraryRootKind.desktopPath, locator: root.path, displayName: 'Library');
       final provider = LocalDirectoryLibraryStorageProvider();
       final storageA = StorageService(
         appDirectory: () async => sandboxA,
@@ -470,26 +305,11 @@ void main() {
       var old = await storageA.loadManifest();
       final bookId = sha256.convert(await source.readAsBytes()).toString();
       expect(old.books.single.id, bookId);
-      await storageA.updateProgress(
-        bookId: bookId,
-        progressPercent: 63,
-        locator: 'paragraph:42',
-      );
-      await storageA.addBookmark(
-        bookId: bookId,
-        label: 'keep',
-        locator: 'paragraph:42',
-      );
-      await storageA.addBookmark(
-        bookId: bookId,
-        label: 'deleted',
-        locator: 'paragraph:7',
-      );
+      await storageA.updateProgress(bookId: bookId, progressPercent: 63, locator: 'paragraph:42');
+      await storageA.addBookmark(bookId: bookId, label: 'keep', locator: 'paragraph:42');
+      await storageA.addBookmark(bookId: bookId, label: 'deleted', locator: 'paragraph:7');
       await storageA.mutateManifest((manifest) {
-        final revision = SyncRevision(
-          counter: manifest.logicalClock + 1,
-          deviceId: manifest.deviceId,
-        );
+        final revision = SyncRevision(counter: manifest.logicalClock + 1, deviceId: manifest.deviceId);
         final book = manifest.books.single;
         final bookmarks = book.bookmarks.map((bookmark) {
           if (bookmark.label != 'deleted') return bookmark;
@@ -530,16 +350,10 @@ void main() {
           ],
           trustedDevices: <TrustedDeviceRecord>[
             ...manifest.trustedDevices,
-            TrustedDeviceRecord(
-              deviceId: 'device-peer',
-              name: 'Peer',
-              publicKey: 'PEER-PUBLIC',
-            ),
+            TrustedDeviceRecord(deviceId: 'device-peer', name: 'Peer', publicKey: 'PEER-PUBLIC'),
           ],
           logicalClock: revision.counter,
-          appliedOperationIds: const <String>[
-            'operation-before-reinstall',
-          ],
+          appliedOperationIds: const <String>['operation-before-reinstall'],
         );
       });
       await storageA.flushPortableState();
@@ -561,53 +375,25 @@ void main() {
         secretStore: _MemorySecretStore(),
         libraryStorageProvider: provider,
       );
-      await storageB.configureLibraryRoot(
-        rootHandle,
-        bootstrapPortableState: false,
-      );
+      await storageB.configureLibraryRoot(rootHandle, bootstrapPortableState: false);
       final before = await storageB.loadManifest();
       expect(before.deviceId, isNot(oldDeviceId));
       expect(before.deviceSigningPrivateKey, isNot(oldPrivateKey));
 
-      final recovered = await storageB.recoverWithRecoveryKey(
-        recovery.displayKey,
-      );
+      final recovered = await storageB.recoverWithRecoveryKey(recovery.displayKey);
       expect(recovered.accountId, oldAccountId);
       expect(recovered.accountEncryptionKey, oldAccountKey);
       expect(recovered.deviceId, isNot(oldDeviceId));
       expect(recovered.deviceSigningPrivateKey, isNot(oldPrivateKey));
-      final recoveredBook = recovered.books.singleWhere(
-        (book) => book.id == bookId,
-      );
+      final recoveredBook = recovered.books.singleWhere((book) => book.id == bookId);
       expect(recoveredBook.relativeLocation, 'Archive/book.txt');
       expect(recoveredBook.progressPercent, 63);
       expect(recoveredBook.currentLocator, 'paragraph:42');
-      expect(
-        recoveredBook.visibleBookmarks.map((bookmark) => bookmark.label),
-        contains('keep'),
-      );
-      expect(
-        recoveredBook.bookmarks
-            .singleWhere((bookmark) => bookmark.label == 'deleted')
-            .isDeleted,
-        isTrue,
-      );
-      expect(
-        recovered.books
-            .singleWhere((book) => book.id == 'remote-sha')
-            .relativeLocation,
-        isNull,
-      );
-      expect(
-        recovered.books
-            .singleWhere((book) => book.id == 'deleted-sha')
-            .isDeleted,
-        isTrue,
-      );
-      expect(
-        recovered.appliedOperationIds,
-        contains('operation-before-reinstall'),
-      );
+      expect(recoveredBook.visibleBookmarks.map((bookmark) => bookmark.label), contains('keep'));
+      expect(recoveredBook.bookmarks.singleWhere((bookmark) => bookmark.label == 'deleted').isDeleted, isTrue);
+      expect(recovered.books.singleWhere((book) => book.id == 'remote-sha').relativeLocation, isNull);
+      expect(recovered.books.singleWhere((book) => book.id == 'deleted-sha').isDeleted, isTrue);
+      expect(recovered.appliedOperationIds, contains('operation-before-reinstall'));
       await storageB.dispose();
     } finally {
       if (await temp.exists()) await temp.delete(recursive: true);
@@ -621,9 +407,7 @@ LibraryManifest _manifest({
   double progress = 20,
   List<BookRecord>? books,
 }) {
-  final accountKey = base64UrlEncode(
-    List<int>.generate(32, (index) => index + 1),
-  ).replaceAll('=', '');
+  final accountKey = base64UrlEncode(List<int>.generate(32, (index) => index + 1)).replaceAll('=', '');
   final revision = SyncRevision(counter: 5, deviceId: deviceId);
   final book = BookRecord(
     id: 'book-sha',
@@ -640,13 +424,7 @@ LibraryManifest _manifest({
     progressRevision: revision,
     availableOnDeviceIds: <String>[deviceId],
     bookmarks: <BookmarkRecord>[
-      BookmarkRecord(
-        id: 'bookmark-live',
-        bookId: 'book-sha',
-        label: 'Live',
-        locator: 'epub:c1',
-        revision: revision,
-      ),
+      BookmarkRecord(id: 'bookmark-live', bookId: 'book-sha', label: 'Live', locator: 'epub:c1', revision: revision),
       BookmarkRecord(
         id: 'bookmark-deleted',
         bookId: 'book-sha',
@@ -667,12 +445,7 @@ LibraryManifest _manifest({
     deviceSigningPrivateKey: privateKey,
     books: books ?? <BookRecord>[book],
     trustedDevices: <TrustedDeviceRecord>[
-      TrustedDeviceRecord(
-        deviceId: deviceId,
-        name: deviceId,
-        role: 'owner',
-        publicKey: 'PUBLIC-$deviceId',
-      ),
+      TrustedDeviceRecord(deviceId: deviceId, name: deviceId, role: 'owner', publicKey: 'PUBLIC-$deviceId'),
     ],
     logicalClock: 5,
     appliedOperationIds: const <String>['operation-1'],

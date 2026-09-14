@@ -187,37 +187,24 @@ class _LibraryScreenState extends State<LibraryScreen> {
           await widget.storage.refreshLibrary();
           manifest = await widget.storage.loadManifest();
           loadedManifest = manifest;
-          if (manifest.logicalClock > clockBeforeScan &&
-              widget.sync.state.value.connected) {
-            unawaited(
-              widget.sync.broadcastLibrarySnapshot(
-                reason: 'library_scan',
-              ),
-            );
+          if (manifest.logicalClock > clockBeforeScan && widget.sync.state.value.connected) {
+            unawaited(widget.sync.broadcastLibrarySnapshot(reason: 'library_scan'));
           }
-          final suggestRecoveryKey =
-              await widget.storage.ensurePortableStateOnStartup();
+          final suggestRecoveryKey = await widget.storage.ensurePortableStateOnStartup();
           manifest = await widget.storage.loadManifest();
           loadedManifest = manifest;
-          if (suggestRecoveryKey &&
-              !_recoverySuggestionShown &&
-              mounted) {
+          if (suggestRecoveryKey && !_recoverySuggestionShown && mounted) {
             _recoverySuggestionShown = true;
             WidgetsBinding.instance.addPostFrameCallback((_) {
               if (!mounted) return;
               ScaffoldMessenger.of(context).showSnackBar(
                 SnackBar(
-                  content: const Text(
-                    'Создайте Recovery Key на случай потери всех устройств.',
-                  ),
+                  content: const Text('Создайте Recovery Key на случай потери всех устройств.'),
                   action: SnackBarAction(
                     label: 'Открыть',
                     onPressed: () => Navigator.of(context).push(
                       MaterialPageRoute(
-                        builder: (_) => SyncScreen(
-                          storage: widget.storage,
-                          sync: widget.sync,
-                        ),
+                        builder: (_) => SyncScreen(storage: widget.storage, sync: widget.sync),
                       ),
                     ),
                   ),
@@ -251,47 +238,35 @@ class _LibraryScreenState extends State<LibraryScreen> {
     }
   }
 
-  Future<_ExistingLibraryAction?> _chooseExistingLibraryAction(
-    PortableLibraryInspection inspection,
-  ) => showDialog<_ExistingLibraryAction>(
-    context: context,
-    barrierDismissible: false,
-    builder: (context) => AlertDialog(
-      title: const Text('Восстановить существующий аккаунт ReadArc'),
-      content: Text(
-        'В выбранной библиотеке найдено переносимое состояние ReadArc.\n\n'
-        'Recovery Key нужен, если больше не осталось ни одного '
-        'подключённого устройства.' +
-        (inspection.accountIds.isEmpty
-            ? ''
-            : '\n\nАккаунт: ' + inspection.accountIds.join(', ')),
-      ),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.of(context).pop(),
-          child: const Text('Отмена'),
-        ),
-        TextButton(
-          onPressed: () => Navigator.of(context).pop(
-            _ExistingLibraryAction.newAccount,
+  Future<_ExistingLibraryAction?> _chooseExistingLibraryAction(PortableLibraryInspection inspection) =>
+      showDialog<_ExistingLibraryAction>(
+        context: context,
+        barrierDismissible: false,
+        builder: (context) => AlertDialog(
+          title: const Text('Восстановить существующий аккаунт ReadArc'),
+          content: Text(
+            'В выбранной библиотеке найдено переносимое состояние ReadArc.\n\n'
+                    'Recovery Key нужен, если больше не осталось ни одного '
+                    'подключённого устройства.' +
+                (inspection.accountIds.isEmpty ? '' : '\n\nАккаунт: ' + inspection.accountIds.join(', ')),
           ),
-          child: const Text('Начать как новый аккаунт'),
+          actions: [
+            TextButton(onPressed: () => Navigator.of(context).pop(), child: const Text('Отмена')),
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(_ExistingLibraryAction.newAccount),
+              child: const Text('Начать как новый аккаунт'),
+            ),
+            OutlinedButton(
+              onPressed: () => Navigator.of(context).pop(_ExistingLibraryAction.recoveryKey),
+              child: const Text('Использовать Recovery Key'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.of(context).pop(_ExistingLibraryAction.pairing),
+              child: const Text('Подключить другое устройство'),
+            ),
+          ],
         ),
-        OutlinedButton(
-          onPressed: () => Navigator.of(context).pop(
-            _ExistingLibraryAction.recoveryKey,
-          ),
-          child: const Text('Использовать Recovery Key'),
-        ),
-        FilledButton(
-          onPressed: () => Navigator.of(context).pop(
-            _ExistingLibraryAction.pairing,
-          ),
-          child: const Text('Подключить другое устройство'),
-        ),
-      ],
-    ),
-  );
+      );
 
   Future<String?> _requestRecoveryKey() async {
     final controller = TextEditingController();
@@ -304,19 +279,11 @@ class _LibraryScreenState extends State<LibraryScreen> {
           autofocus: true,
           autocorrect: false,
           enableSuggestions: false,
-          decoration: const InputDecoration(
-            labelText: 'Введите сохранённый Recovery Key',
-          ),
+          decoration: const InputDecoration(labelText: 'Введите сохранённый Recovery Key'),
         ),
         actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(),
-            child: const Text('Отмена'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.of(context).pop(controller.text),
-            child: const Text('Восстановить'),
-          ),
+          TextButton(onPressed: () => Navigator.of(context).pop(), child: const Text('Отмена')),
+          FilledButton(onPressed: () => Navigator.of(context).pop(controller.text), child: const Text('Восстановить')),
         ],
       ),
     );
@@ -335,14 +302,8 @@ class _LibraryScreenState extends State<LibraryScreen> {
             'восстановить невозможно. Каталог .readarc удалён не будет.',
           ),
           actions: [
-            TextButton(
-              onPressed: () => Navigator.of(context).pop(false),
-              child: const Text('Назад'),
-            ),
-            FilledButton(
-              onPressed: () => Navigator.of(context).pop(true),
-              child: const Text('Создать новый аккаунт'),
-            ),
+            TextButton(onPressed: () => Navigator.of(context).pop(false), child: const Text('Назад')),
+            FilledButton(onPressed: () => Navigator.of(context).pop(true), child: const Text('Создать новый аккаунт')),
           ],
         ),
       ) ??
@@ -359,10 +320,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
           await widget.storage.configureLibraryRoot(root);
           break;
         case PortableLibraryDisposition.currentAccount:
-          await widget.storage.configureLibraryRoot(
-            root,
-            bootstrapPortableState: false,
-          );
+          await widget.storage.configureLibraryRoot(root, bootstrapPortableState: false);
           await widget.storage.recoverPortableStateAfterPairing();
           break;
         case PortableLibraryDisposition.recoveryRequired:
@@ -375,40 +333,26 @@ class _LibraryScreenState extends State<LibraryScreen> {
           } else if (action == _ExistingLibraryAction.recoveryKey) {
             final key = await _requestRecoveryKey();
             if (key == null || key.isEmpty) return;
-            await widget.storage.configureLibraryRoot(
-              root,
-              bootstrapPortableState: false,
-            );
+            await widget.storage.configureLibraryRoot(root, bootstrapPortableState: false);
             await widget.storage.recoverWithRecoveryKey(key);
           } else {
-            await widget.storage.configureLibraryRoot(
-              root,
-              bootstrapPortableState: false,
-            );
+            await widget.storage.configureLibraryRoot(root, bootstrapPortableState: false);
             if (!mounted) return;
             await Navigator.of(context).push(
               MaterialPageRoute(
-                builder: (_) => SyncScreen(
-                  storage: widget.storage,
-                  sync: widget.sync,
-                ),
+                builder: (_) => SyncScreen(storage: widget.storage, sync: widget.sync),
               ),
             );
           }
           break;
         case PortableLibraryDisposition.incomplete:
         case PortableLibraryDisposition.unsupported:
-          throw PortableStateException(
-            inspection.message ??
-                'Portable state нельзя безопасно открыть',
-          );
+          throw PortableStateException(inspection.message ?? 'Portable state нельзя безопасно открыть');
       }
       await _reload();
     } catch (error) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Не удалось открыть библиотеку: $error')),
-      );
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Не удалось открыть библиотеку: $error')));
     } finally {
       if (mounted) setState(() => _busy = false);
     }
@@ -8604,9 +8548,7 @@ class _SyncScreenState extends State<SyncScreen> {
     ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Аккаунт скопирован')));
   }
 
-  Future<void> _createOrRotateRecoveryKey({
-    required bool rotate,
-  }) async {
+  Future<void> _createOrRotateRecoveryKey({required bool rotate}) async {
     if (rotate) {
       final confirmed = await showDialog<bool>(
         context: context,
@@ -8618,14 +8560,8 @@ class _SyncScreenState extends State<SyncScreen> {
             'generation до следующей подтверждённой ротации.',
           ),
           actions: [
-            TextButton(
-              onPressed: () => Navigator.of(context).pop(false),
-              child: const Text('Отмена'),
-            ),
-            FilledButton(
-              onPressed: () => Navigator.of(context).pop(true),
-              child: const Text('Продолжить'),
-            ),
+            TextButton(onPressed: () => Navigator.of(context).pop(false), child: const Text('Отмена')),
+            FilledButton(onPressed: () => Navigator.of(context).pop(true), child: const Text('Продолжить')),
           ],
         ),
       );
@@ -8634,13 +8570,9 @@ class _SyncScreenState extends State<SyncScreen> {
     setState(() => _busy = true);
     try {
       final material = await widget.storage.createRecoveryKey();
-      final verified = await widget.storage.verifyRecoveryKey(
-        material.displayKey,
-      );
+      final verified = await widget.storage.verifyRecoveryKey(material.displayKey);
       if (!verified) {
-        throw StateError(
-          'Созданный Recovery Key не прошёл проверку',
-        );
+        throw StateError('Созданный Recovery Key не прошёл проверку');
       }
       if (!mounted) return;
       var saved = false;
@@ -8661,17 +8593,12 @@ class _SyncScreenState extends State<SyncScreen> {
                 const SizedBox(height: 16),
                 SelectableText(
                   material.displayKey,
-                  style: const TextStyle(
-                    fontFamily: 'monospace',
-                    fontWeight: FontWeight.w700,
-                  ),
+                  style: const TextStyle(fontFamily: 'monospace', fontWeight: FontWeight.w700),
                 ),
                 const SizedBox(height: 12),
                 OutlinedButton.icon(
                   onPressed: () async {
-                    await Clipboard.setData(
-                      ClipboardData(text: material.displayKey),
-                    );
+                    await Clipboard.setData(ClipboardData(text: material.displayKey));
                   },
                   icon: const Icon(Icons.copy_rounded),
                   label: const Text('Скопировать'),
@@ -8679,30 +8606,21 @@ class _SyncScreenState extends State<SyncScreen> {
                 CheckboxListTile(
                   contentPadding: EdgeInsets.zero,
                   value: saved,
-                  onChanged: (value) => setDialogState(
-                    () => saved = value ?? false,
-                  ),
+                  onChanged: (value) => setDialogState(() => saved = value ?? false),
                   title: const Text('Я сохранил Recovery Key'),
                   controlAffinity: ListTileControlAffinity.leading,
                 ),
               ],
             ),
             actions: [
-              FilledButton(
-                onPressed: saved
-                    ? () => Navigator.of(context).pop()
-                    : null,
-                child: const Text('Готово'),
-              ),
+              FilledButton(onPressed: saved ? () => Navigator.of(context).pop() : null, child: const Text('Готово')),
             ],
           ),
         ),
       );
     } catch (error) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Не удалось создать Recovery Key: $error')),
-      );
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Не удалось создать Recovery Key: $error')));
     } finally {
       if (mounted) setState(() => _busy = false);
     }
@@ -8915,20 +8833,12 @@ class _SyncScreenState extends State<SyncScreen> {
                       runSpacing: 8,
                       children: [
                         FilledButton.icon(
-                          onPressed: _busy
-                              ? null
-                              : () => _createOrRotateRecoveryKey(
-                                  rotate: false,
-                                ),
+                          onPressed: _busy ? null : () => _createOrRotateRecoveryKey(rotate: false),
                           icon: const Icon(Icons.key_rounded),
                           label: const Text('Создать Recovery Key'),
                         ),
                         OutlinedButton.icon(
-                          onPressed: _busy
-                              ? null
-                              : () => _createOrRotateRecoveryKey(
-                                  rotate: true,
-                                ),
+                          onPressed: _busy ? null : () => _createOrRotateRecoveryKey(rotate: true),
                           icon: const Icon(Icons.sync_lock_rounded),
                           label: const Text('Сменить ключ'),
                         ),

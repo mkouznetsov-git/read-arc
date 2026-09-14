@@ -369,28 +369,18 @@ class _ToggleProvider implements LibraryStorageProvider {
   @override
   Future<void> deleteEntry(LibraryRoot root, String relativeLocation) => delegate.deleteEntry(root, relativeLocation);
   @override
-  Future<bool> containsFile(LibraryRoot root, File source) =>
-      delegate.containsFile(root, source);
+  Future<bool> containsFile(LibraryRoot root, File source) => delegate.containsFile(root, source);
   @override
-  Future<Uint8List?> readServiceFile(
-    LibraryRoot root,
-    String relativeLocation,
-  ) => delegate.readServiceFile(root, relativeLocation);
+  Future<Uint8List?> readServiceFile(LibraryRoot root, String relativeLocation) =>
+      delegate.readServiceFile(root, relativeLocation);
   @override
-  Future<List<String>> listServiceFiles(
-    LibraryRoot root,
-    String relativeDirectory,
-  ) => delegate.listServiceFiles(root, relativeDirectory);
+  Future<List<String>> listServiceFiles(LibraryRoot root, String relativeDirectory) =>
+      delegate.listServiceFiles(root, relativeDirectory);
   @override
   Future<void> publishServiceFile(
     LibraryRoot root,
     String relativeLocation,
     Uint8List bytes, {
     bool preservePrevious = true,
-  }) => delegate.publishServiceFile(
-    root,
-    relativeLocation,
-    bytes,
-    preservePrevious: preservePrevious,
-  );
+  }) => delegate.publishServiceFile(root, relativeLocation, bytes, preservePrevious: preservePrevious);
 }

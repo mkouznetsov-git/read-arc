@@ -114,17 +114,9 @@ class LocalDirectoryLibraryStorageProvider implements LibraryStorageProvider {
     Future<String?> Function()? chooseDirectory,
     Future<void> Function(File stagedFile)? afterStagedCopy,
     Future<void> Function(File stagedFile)? afterServiceStaged,
-  }) => LocalDirectoryLibraryStorageProvider._(
-    chooseDirectory,
-    afterStagedCopy,
-    afterServiceStaged,
-  );
+  }) => LocalDirectoryLibraryStorageProvider._(chooseDirectory, afterStagedCopy, afterServiceStaged);
 
-  LocalDirectoryLibraryStorageProvider._(
-    this._chooseDirectory,
-    this._afterStagedCopy,
-    this._afterServiceStaged,
-  );
+  LocalDirectoryLibraryStorageProvider._(this._chooseDirectory, this._afterStagedCopy, this._afterServiceStaged);
 
   final Future<String?> Function()? _chooseDirectory;
   final Future<void> Function(File stagedFile)? _afterStagedCopy;
@@ -277,18 +269,13 @@ class LocalDirectoryLibraryStorageProvider implements LibraryStorageProvider {
       return false;
     }
   }
+
   @override
-  Future<Uint8List?> readServiceFile(
-    LibraryRoot root,
-    String relativeLocation,
-  ) async {
+  Future<Uint8List?> readServiceFile(LibraryRoot root, String relativeLocation) async {
     final normalized = _normalizeServiceLocation(relativeLocation);
     final rootState = await status(root);
     if (rootState != LibraryRootStatus.available) {
-      throw LibraryRootAccessException(
-        rootState,
-        'Library root is not available for service read',
-      );
+      throw LibraryRootAccessException(rootState, 'Library root is not available for service read');
     }
     await _rejectSymlinkTraversal(root, normalized);
     final file = _file(root, normalized);
@@ -297,35 +284,23 @@ class LocalDirectoryLibraryStorageProvider implements LibraryStorageProvider {
   }
 
   @override
-  Future<List<String>> listServiceFiles(
-    LibraryRoot root,
-    String relativeDirectory,
-  ) async {
+  Future<List<String>> listServiceFiles(LibraryRoot root, String relativeDirectory) async {
     final normalized = _normalizeServiceLocation(relativeDirectory);
     final rootState = await status(root);
     if (rootState != LibraryRootStatus.available) {
-      throw LibraryRootAccessException(
-        rootState,
-        'Library root is not available for service listing',
-      );
+      throw LibraryRootAccessException(rootState, 'Library root is not available for service listing');
     }
     await _rejectSymlinkTraversal(root, normalized);
     final directory = Directory(_file(root, normalized).path);
     if (!await directory.exists()) return const <String>[];
     final rootDirectory = _directory(root);
     final result = <String>[];
-    await for (final entity in directory.list(
-      recursive: true,
-      followLinks: false,
-    )) {
+    await for (final entity in directory.list(recursive: true, followLinks: false)) {
       if (entity is! File) continue;
-      if (await FileSystemEntity.type(entity.path, followLinks: false) ==
-          FileSystemEntityType.link) {
+      if (await FileSystemEntity.type(entity.path, followLinks: false) == FileSystemEntityType.link) {
         continue;
       }
-      final relative = p.posix.joinAll(
-        p.split(p.relative(entity.path, from: rootDirectory.path)),
-      );
+      final relative = p.posix.joinAll(p.split(p.relative(entity.path, from: rootDirectory.path)));
       if (isReservedLibraryLocation(relative)) result.add(relative);
     }
     result.sort();
@@ -342,17 +317,12 @@ class LocalDirectoryLibraryStorageProvider implements LibraryStorageProvider {
     final normalized = _normalizeServiceLocation(relativeLocation);
     final rootState = await status(root);
     if (rootState != LibraryRootStatus.available) {
-      throw LibraryRootAccessException(
-        rootState,
-        'Library root is not available for service write',
-      );
+      throw LibraryRootAccessException(rootState, 'Library root is not available for service write');
     }
     await _rejectSymlinkTraversal(root, normalized);
     final target = _file(root, normalized);
     await target.parent.create(recursive: true);
-    final staged = File(
-      '${target.path}.readarc-staging-$pid-${DateTime.now().microsecondsSinceEpoch}',
-    );
+    final staged = File('${target.path}.readarc-staging-$pid-${DateTime.now().microsecondsSinceEpoch}');
     final previous = File(p.join(target.parent.path, 'previous'));
     var movedCurrent = false;
     var publishedStage = false;
@@ -361,9 +331,7 @@ class LocalDirectoryLibraryStorageProvider implements LibraryStorageProvider {
       final expected = sha256.convert(bytes).toString();
       await _afterServiceStaged?.call(staged);
       if (sha256.convert(await staged.readAsBytes()).toString() != expected) {
-        throw const FileSystemException(
-          'Portable staging verification failed',
-        );
+        throw const FileSystemException('Portable staging verification failed');
       }
       if (preservePrevious && await previous.exists()) {
         await previous.delete();
@@ -375,9 +343,7 @@ class LocalDirectoryLibraryStorageProvider implements LibraryStorageProvider {
       await staged.rename(target.path);
       publishedStage = true;
       if (sha256.convert(await target.readAsBytes()).toString() != expected) {
-        throw const FileSystemException(
-          'Portable publish verification failed',
-        );
+        throw const FileSystemException('Portable publish verification failed');
       }
     } catch (_) {
       if (publishedStage && await target.exists()) await target.delete();
@@ -389,7 +355,6 @@ class LocalDirectoryLibraryStorageProvider implements LibraryStorageProvider {
       if (await staged.exists()) await staged.delete();
     }
   }
-
 }
 
 class PlatformLibraryStorageProvider implements LibraryStorageProvider {
@@ -488,12 +453,8 @@ class PlatformLibraryStorageProvider implements LibraryStorageProvider {
     return result ?? false;
   }
 
-
   @override
-  Future<Uint8List?> readServiceFile(
-    LibraryRoot root,
-    String relativeLocation,
-  ) => _platform(
+  Future<Uint8List?> readServiceFile(LibraryRoot root, String relativeLocation) => _platform(
     () => _channel.invokeMethod<Uint8List>('readServiceFile', {
       ..._rootArgs(root),
       'relativeLocation': _normalizeServiceLocation(relativeLocation),
@@ -501,10 +462,7 @@ class PlatformLibraryStorageProvider implements LibraryStorageProvider {
   );
 
   @override
-  Future<List<String>> listServiceFiles(
-    LibraryRoot root,
-    String relativeDirectory,
-  ) async {
+  Future<List<String>> listServiceFiles(LibraryRoot root, String relativeDirectory) async {
     final result = await _platform(
       () => _channel.invokeListMethod<String>('listServiceFiles', {
         ..._rootArgs(root),
