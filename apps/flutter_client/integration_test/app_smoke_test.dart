@@ -96,6 +96,10 @@ void main() {
         EnginePhase.sendSemanticsUpdate,
         const Duration(seconds: 20),
       );
+      // Restore the binding's handler before assertions. Otherwise a failed
+      // expectation is captured by this test's own error collector and the
+      // integration runner reports only a misleading two-minute timeout.
+      FlutterError.onError = previousHandler;
 
       expect(find.byType(MaterialApp), findsOneWidget);
       expect(find.byType(app.LibraryScreen), findsOneWidget);
@@ -160,6 +164,10 @@ void main() {
         EnginePhase.sendSemanticsUpdate,
         const Duration(seconds: 20),
       );
+      // Restore the binding's handler before assertions. Otherwise a failed
+      // expectation is captured by this test's own error collector and the
+      // integration runner reports only a misleading two-minute timeout.
+      FlutterError.onError = previousHandler;
 
       expect(find.byType(MaterialApp), findsOneWidget);
       expect(find.byType(app.LibraryScreen), findsOneWidget);
