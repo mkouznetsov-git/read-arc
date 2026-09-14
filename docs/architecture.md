@@ -234,3 +234,18 @@ Personal Hub не превращает устройство в облачное 
 ## Sprint 4.2: подключение по коду
 
 Добавлен MVP-pairing: первое устройство создаёт 6-значный код подключения, новое устройство вводит код или вставляет `readarc://pair?...` приглашение и автоматически получает `accountId` и relay endpoint. Ручной ввод `accountId` оставлен только как fallback для разработки. Relay хранит pairing-коды только в памяти и удаляет их после первого использования или истечения срока. Подробности: `docs/sprint_04_2_pairing_codes_ru.md`.
+
+
+## Portable library state (Sprint 49B)
+
+User-owned LibraryRoot contains an application-reserved .readarc namespace.
+Portable metadata is versioned, authenticated-encrypted and partitioned by
+originating installation. Each device writes only state/deviceId/current and
+previous plus its own recovery envelope generations. The account key and all
+device private keys remain outside plaintext storage.
+
+Recovery keeps accountId/accountEncryptionKey but retains the fresh
+installation deviceId and signing keypair. Decrypted snapshots pass through the
+existing Lamport/revision/tombstone merge and then LibraryScanner SHA-256
+reconciliation; relay sync remains an equal merge input, not subordinate to
+portable state. See ADR-010 for the format and threat model.

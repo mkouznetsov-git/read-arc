@@ -115,7 +115,34 @@ class LibraryRepository {
     });
   }
 
-  Future<LibraryManifest> replace(LibraryManifest replacement) => mutate((_) => replacement);
+  Future<LibraryManifest> replace(LibraryManifest replacement) =>
+      mutate((_) => replacement);
+
+  /// Commits authenticated account recovery while preserving the installation
+  /// identity that was generated in the new sandbox. The ordinary destructive
+  /// replacement guard intentionally remains strict for every other caller.
+  Future<LibraryManifest> replaceAfterAuthenticatedRecovery(
+    LibraryManifest replacement,
+  ) => _serialized(() async {
+    final current = await _readOrCreate();
+    if (replacement.deviceId != current.deviceId ||
+        replacement.deviceSigningPublicKey !=
+            current.deviceSigningPublicKey ||
+        replacement.deviceSigningPrivateKey !=
+            current.deviceSigningPrivateKey) {
+      throw StateError(
+        'Recovery attempted to replace installation device identity',
+      );
+    }
+    if (replacement.accountId.trim().isEmpty ||
+        replacement.accountEncryptionKey.trim().isEmpty) {
+      throw StateError('Recovered account identity is incomplete');
+    }
+    final updated = _normalize(replacement);
+    await _writeVerified(updated, previous: current);
+    return updated;
+  });
+
 
   Future<File> get manifestFile async => File(p.join((await _appDirectory()).path, 'manifest.json'));
 
