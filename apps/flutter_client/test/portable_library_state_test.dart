@@ -136,6 +136,11 @@ void main() {
       final manifest = _manifest(deviceId: 'device-a');
       await portable.writeSnapshot(libraryRoot, manifest);
       final oldKey = await portable.createRecoveryKey(root: libraryRoot, manifest: manifest);
+      await portable.activateRecoveryKey(
+        root: libraryRoot,
+        manifest: manifest,
+        recoveryKey: oldKey.displayKey,
+      );
       fail = true;
       await expectLater(portable.createRecoveryKey(root: libraryRoot, manifest: manifest), throwsStateError);
       fail = false;
@@ -149,11 +154,155 @@ void main() {
       );
     });
 
+    test('confirmed Recovery Key rotation revokes old key and pending rotation does not', () async {
+      final portable = PortableLibraryState(provider);
+      final manifest = _manifest(deviceId: 'device-a');
+      await portable.writeSnapshot(libraryRoot, manifest);
+      final oldKey = await portable.createRecoveryKey(root: libraryRoot, manifest: manifest);
+      await portable.activateRecoveryKey(
+        root: libraryRoot,
+        manifest: manifest,
+        recoveryKey: oldKey.displayKey,
+      );
+
+      final rotatedManifest = manifest.copyWith(logicalClock: manifest.logicalClock + 1);
+      final newKey = await portable.createRecoveryKey(
+        root: libraryRoot,
+        manifest: rotatedManifest,
+      );
+      expect(
+        await portable.verifyRecoveryKey(
+          root: libraryRoot,
+          recoveryKey: newKey.displayKey,
+          expectedAccountId: manifest.accountId,
+        ),
+        isFalse,
+      );
+      expect(
+        await portable.verifyRecoveryKey(
+          root: libraryRoot,
+          recoveryKey: newKey.displayKey,
+          expectedAccountId: manifest.accountId,
+          includePending: true,
+        ),
+        isTrue,
+      );
+      expect(
+        await portable.verifyRecoveryKey(
+          root: libraryRoot,
+          recoveryKey: oldKey.displayKey,
+          expectedAccountId: manifest.accountId,
+        ),
+        isTrue,
+      );
+
+      await portable.activateRecoveryKey(
+        root: libraryRoot,
+        manifest: rotatedManifest,
+        recoveryKey: newKey.displayKey,
+      );
+      expect(
+        await portable.verifyRecoveryKey(
+          root: libraryRoot,
+          recoveryKey: oldKey.displayKey,
+          expectedAccountId: manifest.accountId,
+        ),
+        isFalse,
+      );
+      expect(
+        await portable.verifyRecoveryKey(
+          root: libraryRoot,
+          recoveryKey: newKey.displayKey,
+          expectedAccountId: manifest.accountId,
+        ),
+        isTrue,
+      );
+    });
+
+    test('newer rotation wins across installation namespaces', () async {
+      final portable = PortableLibraryState(provider);
+      final deviceA = _manifest(deviceId: 'device-a');
+      final deviceB = _manifest(deviceId: 'device-b').copyWith(logicalClock: deviceA.logicalClock + 1);
+      final oldKey = await portable.createRecoveryKey(root: libraryRoot, manifest: deviceA);
+      await portable.activateRecoveryKey(
+        root: libraryRoot,
+        manifest: deviceA,
+        recoveryKey: oldKey.displayKey,
+      );
+      final newKey = await portable.createRecoveryKey(root: libraryRoot, manifest: deviceB);
+      await portable.activateRecoveryKey(
+        root: libraryRoot,
+        manifest: deviceB,
+        recoveryKey: newKey.displayKey,
+      );
+
+      expect(
+        await portable.verifyRecoveryKey(
+          root: libraryRoot,
+          recoveryKey: oldKey.displayKey,
+          expectedAccountId: deviceA.accountId,
+        ),
+        isFalse,
+      );
+      expect(
+        await portable.verifyRecoveryKey(
+          root: libraryRoot,
+          recoveryKey: newKey.displayKey,
+          expectedAccountId: deviceA.accountId,
+        ),
+        isTrue,
+      );
+    });
+
+    test('recovery envelope falls back to previous and rejects double corruption', () async {
+      final portable = PortableLibraryState(provider);
+      final manifest = _manifest(deviceId: 'device-a');
+      await portable.writeSnapshot(libraryRoot, manifest);
+      final recovery = await portable.createRecoveryKey(root: libraryRoot, manifest: manifest);
+      await portable.activateRecoveryKey(
+        root: libraryRoot,
+        manifest: manifest,
+        recoveryKey: recovery.displayKey,
+      );
+
+      for (final name in const <String>['current', 'previous']) {
+        final file = File('${root.path}/.readarc/recovery/device-a/$name');
+        final decoded = jsonDecode(await file.readAsString()) as Map<String, dynamic>;
+        final ciphertext = decoded['ciphertext'] as String;
+        decoded['ciphertext'] = (ciphertext.startsWith('A') ? 'B' : 'A') + ciphertext.substring(1);
+        await file.writeAsString(jsonEncode(decoded), flush: true);
+        if (name == 'current') {
+          expect(
+            await portable.verifyRecoveryKey(
+              root: libraryRoot,
+              recoveryKey: recovery.displayKey,
+              expectedAccountId: manifest.accountId,
+            ),
+            isTrue,
+          );
+        }
+      }
+
+      await expectLater(
+        portable.recover(
+          root: libraryRoot,
+          recoveryKey: recovery.displayKey,
+          freshInstallation: _manifest(deviceId: 'fresh-device', books: const []),
+        ),
+        throwsA(isA<PortableStateException>()),
+      );
+    });
+
     test('Recovery Key wraps account key and wrong key is rejected', () async {
       final portable = PortableLibraryState(provider);
       final manifest = _manifest(deviceId: 'device-a');
       await portable.writeSnapshot(libraryRoot, manifest);
       final recovery = await portable.createRecoveryKey(root: libraryRoot, manifest: manifest);
+      await portable.activateRecoveryKey(
+        root: libraryRoot,
+        manifest: manifest,
+        recoveryKey: recovery.displayKey,
+      );
       final raw = await _readReadArc(root);
       expect(raw, isNot(contains(recovery.displayKey)));
       expect(raw, isNot(contains(manifest.accountEncryptionKey)));
@@ -185,6 +334,11 @@ void main() {
       final old = _manifest(deviceId: 'device-a', privateKey: 'OLD-PRIVATE');
       await portable.writeSnapshot(libraryRoot, old);
       final recovery = await portable.createRecoveryKey(root: libraryRoot, manifest: old);
+      await portable.activateRecoveryKey(
+        root: libraryRoot,
+        manifest: old,
+        recoveryKey: recovery.displayKey,
+      );
       final fresh = _manifest(deviceId: 'device-new', privateKey: 'NEW-PRIVATE', books: const []);
       final recovered = await portable.recover(
         root: libraryRoot,
@@ -358,6 +512,7 @@ void main() {
       });
       await storageA.flushPortableState();
       final recovery = await storageA.createRecoveryKey();
+      await storageA.confirmRecoveryKey(recovery.displayKey);
       old = await storageA.loadManifest();
       final oldAccountId = old.accountId;
       final oldAccountKey = old.accountEncryptionKey;

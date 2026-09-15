@@ -52,13 +52,23 @@ HKDF-SHA256 с отдельными domains:
 - readarc-recovery-envelope-v1.
 
 AAD аутентифицирует format version, kind, crypto suite, accountId,
-originating deviceId, generation, revision/keyId и creation timestamp.
-Ciphertext или header нельзя незаметно изменить.
+originating deviceId, generation, revision/keyId, activation,
+rotationRevision и creation timestamp. Ciphertext или header нельзя
+незаметно изменить.
 
 Recovery Key — случайные 256 bit, Base32 без неоднозначных символов, с
 32-bit checksum и префиксом версии RA1. Это не пароль, password KDF не
-используется. Ключ показывается только после authenticated read-after-publish,
-не логируется, не отправляется relay и не сохраняется plaintext.
+используется. Ключ показывается только после authenticated read-after-publish
+pending envelope, не логируется, не отправляется relay и не сохраняется
+plaintext.
+
+Ротация двухфазная. Pending envelope не отзывает прежний active key. После
+подтверждения пользователем новый envelope дважды публикуется как active, чтобы
+current и previous содержали уже подтверждённый ключ. Только тогда старый ключ
+перестаёт подходить. Между device namespaces побеждает наибольший
+Lamport rotationRevision с детерминированным deviceId tie-break; wall clock не
+участвует. Поэтому crash до подтверждения оставляет старый ключ рабочим, а
+успешная ротация действительно отзывает его во всех namespaces.
 
 Recovery envelope содержит зашифрованный accountEncryptionKey; plaintext
 header содержит только versioned non-secret routing metadata, включая

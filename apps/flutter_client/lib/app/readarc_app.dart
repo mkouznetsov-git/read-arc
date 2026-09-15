@@ -8555,9 +8555,9 @@ class _SyncScreenState extends State<SyncScreen> {
         builder: (context) => AlertDialog(
           title: const Text('Создать новый Recovery Key?'),
           content: const Text(
-            'После успешной ротации сохраните новый ключ. Старый ключ '
-            'может оставаться пригодным только как аварийная previous '
-            'generation до следующей подтверждённой ротации.',
+            'До подтверждения новый ключ остаётся pending, а старый '
+            'продолжает работать. После подтверждения старый Recovery Key '
+            'будет отозван.',
           ),
           actions: [
             TextButton(onPressed: () => Navigator.of(context).pop(false), child: const Text('Отмена')),
@@ -8570,7 +8570,10 @@ class _SyncScreenState extends State<SyncScreen> {
     setState(() => _busy = true);
     try {
       final material = await widget.storage.createRecoveryKey();
-      final verified = await widget.storage.verifyRecoveryKey(material.displayKey);
+      final verified = await widget.storage.verifyRecoveryKey(
+        material.displayKey,
+        includePending: true,
+      );
       if (!verified) {
         throw StateError('Созданный Recovery Key не прошёл проверку');
       }
@@ -8618,6 +8621,10 @@ class _SyncScreenState extends State<SyncScreen> {
           ),
         ),
       );
+      await widget.storage.confirmRecoveryKey(material.displayKey);
+      if (!await widget.storage.verifyRecoveryKey(material.displayKey)) {
+        throw StateError('Подтверждённый Recovery Key не прошёл проверку');
+      }
     } catch (error) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Не удалось создать Recovery Key: $error')));

@@ -22,7 +22,8 @@ LibraryRoot, а .readarc хранит только encrypted portable metadata.
 - snapshot checkpoints после durable manifest mutation, sync merge,
   reader exit, lifecycle background и controlled shutdown;
 - SAF service I/O на Android и coordinated security-scoped I/O на Apple;
-- Recovery Key create/show/copy/confirm/verify/rotate UX;
+- Recovery Key create/show/copy/confirm/verify и двухфазный rotate UX, который
+  отзывает прежний key во всех device namespaces только после подтверждения;
 - явные unsupported/incomplete/corrupt/wrong-key paths.
 
 ## Snapshot policy
@@ -62,3 +63,4 @@ wall clock не участвует в v3 ordering.
 
 Не реализованы Sprint 50 Ed25519 sync-envelope migration, collections, FTS,
 reader themes, CHM, EPUB/FB2 fixes, installers и auto-update.
+

@@ -58,6 +58,24 @@ class RecoveryKeyMaterial {
   final String keyId;
 }
 
+class _RecoveryEnvelopeCandidate {
+  const _RecoveryEnvelopeCandidate({
+    required this.envelope,
+    required this.accountId,
+    required this.keyId,
+    required this.rotationCounter,
+    required this.rotationDeviceId,
+    required this.generationName,
+  });
+
+  final Map<String, dynamic> envelope;
+  final String accountId;
+  final String keyId;
+  final int rotationCounter;
+  final String rotationDeviceId;
+  final String generationName;
+}
+
 /// Encrypted, installation-namespaced portable metadata stored in LibraryRoot.
 ///
 /// This layer deliberately serializes [LibraryManifest.toSyncJson] and delegates
@@ -220,14 +238,73 @@ class PortableLibraryState {
     final bytes = _randomBytes(32);
     final display = _encodeRecoveryKey(bytes);
     final keyId = _keyId(bytes);
-    await _writeRecoveryEnvelope(root: root, manifest: manifest, recoveryKeyBytes: bytes, keyId: keyId);
+    await _writeRecoveryEnvelope(
+      root: root,
+      manifest: manifest,
+      recoveryKeyBytes: bytes,
+      keyId: keyId,
+      activation: 'pending',
+      rotationCounter: manifest.logicalClock,
+    );
     return RecoveryKeyMaterial(displayKey: display, keyId: keyId);
+  }
+
+  Future<void> activateRecoveryKey({
+    required LibraryRoot root,
+    required LibraryManifest manifest,
+    required String recoveryKey,
+  }) async {
+    final keyBytes = _decodeRecoveryKey(recoveryKey);
+    final keyId = _keyId(keyBytes);
+    final current = '$portableRecoveryDirectory/${_namespace(manifest.deviceId)}/current';
+    final raw = await _provider.readServiceFile(root, current);
+    if (raw == null) {
+      throw const PortableStateException('Pending Recovery Key не найден');
+    }
+    final envelope = _jsonObject(raw, current);
+    final activation = envelope['activation']?.toString();
+    if (envelope['kind'] != 'recovery-envelope' ||
+        envelope['accountId'] != manifest.accountId ||
+        envelope['originatingDeviceId'] != manifest.deviceId ||
+        envelope['keyId'] != keyId ||
+        (activation != 'pending' && activation != 'active')) {
+      throw const PortableStateException('Pending Recovery Key не соответствует текущей installation');
+    }
+    final rotation = _rotationRevision(envelope);
+    final clear = await _decryptJson(envelope: envelope, inputKey: keyBytes, expectedDomain: recoveryDomain);
+    if (clear['accountEncryptionKey'] != manifest.accountEncryptionKey) {
+      throw const PortableStateException('Pending Recovery Key не прошёл проверку account identity');
+    }
+    await _writeRecoveryEnvelope(
+      root: root,
+      manifest: manifest,
+      recoveryKeyBytes: keyBytes,
+      keyId: keyId,
+      activation: 'active',
+      rotationCounter: rotation.$1,
+    );
+    try {
+      // A second publish makes both durability generations contain the newly
+      // confirmed key, so a successful rotation invalidates its predecessor.
+      await _writeRecoveryEnvelope(
+        root: root,
+        manifest: manifest,
+        recoveryKeyBytes: keyBytes,
+        keyId: keyId,
+        activation: 'active',
+        rotationCounter: rotation.$1,
+      );
+    } catch (_) {
+      // The first authenticated active generation is already durable. Losing
+      // the redundant copy must not misreport a confirmed, usable key as lost.
+    }
   }
 
   Future<bool> verifyRecoveryKey({
     required LibraryRoot root,
     required String recoveryKey,
     String? expectedAccountId,
+    bool includePending = false,
   }) async {
     try {
       final result = await recover(
@@ -239,6 +316,7 @@ class PortableLibraryState {
           deviceName: 'Recovery probe',
         ),
         probeOnly: true,
+        includePending: includePending,
       );
       return expectedAccountId == null || result.accountId == expectedAccountId;
     } on PortableStateException {
@@ -255,27 +333,61 @@ class PortableLibraryState {
     required String recoveryKey,
     required LibraryManifest freshInstallation,
     bool probeOnly = false,
+    bool includePending = false,
   }) async {
     final keyBytes = _decodeRecoveryKey(recoveryKey);
+    final requestedKeyId = _keyId(keyBytes);
     final recoveryFiles = await _provider.listServiceFiles(root, portableRecoveryDirectory);
     final namespaces = _generationNamespaces(recoveryFiles, portableRecoveryDirectory);
     if (namespaces.isEmpty) {
       throw const PortableStateException('Recovery envelope не найден; нужен другой trusted device');
     }
+    final candidates = await _recoveryEnvelopeCandidates(
+      root,
+      namespaces,
+      includePending: includePending,
+    );
+    final matchingAccounts = candidates
+        .where((candidate) => candidate.keyId == requestedKeyId)
+        .map((candidate) => candidate.accountId)
+        .toSet()
+        .toList()
+      ..sort();
 
     Map<String, dynamic>? recovered;
     Object? lastFailure;
-    for (final namespace in namespaces) {
-      for (final generationName in const <String>['current', 'previous']) {
-        final path = '$portableRecoveryDirectory/$namespace/$generationName';
-        final raw = await _provider.readServiceFile(root, path);
-        if (raw == null) continue;
+    for (final candidateAccountId in matchingAccounts) {
+      final accountCandidates = candidates
+          .where((candidate) => candidate.accountId == candidateAccountId)
+          .toList()
+        ..sort(_compareRecoveryCandidates);
+      if (accountCandidates.isEmpty) continue;
+      final newest = accountCandidates.last;
+      if (newest.keyId != requestedKeyId) {
+        // The supplied key belonged to this account, but a causally newer
+        // confirmed rotation superseded it.
+        continue;
+      }
+      final newestCandidates = accountCandidates
+          .where(
+            (candidate) =>
+                candidate.keyId == requestedKeyId &&
+                candidate.rotationCounter == newest.rotationCounter &&
+                candidate.rotationDeviceId == newest.rotationDeviceId,
+          )
+          .toList()
+        ..sort((left, right) {
+          if (left.generationName == right.generationName) return 0;
+          return left.generationName == 'current' ? -1 : 1;
+        });
+      for (final candidate in newestCandidates) {
         try {
-          final envelope = _jsonObject(raw, path);
-          if (envelope['kind'] != 'recovery-envelope') continue;
-          if (envelope['keyId']?.toString() != _keyId(keyBytes)) continue;
-          recovered = await _decryptJson(envelope: envelope, inputKey: keyBytes, expectedDomain: recoveryDomain);
-          recovered['accountId'] = envelope['accountId'];
+          recovered = await _decryptJson(
+            envelope: candidate.envelope,
+            inputKey: keyBytes,
+            expectedDomain: recoveryDomain,
+          );
+          recovered['accountId'] = candidate.accountId;
           break;
         } catch (error) {
           lastFailure = error;
@@ -284,7 +396,9 @@ class PortableLibraryState {
       if (recovered != null) break;
     }
     if (recovered == null) {
-      if (lastFailure is PortableStateException) throw lastFailure;
+      if (lastFailure != null) {
+        throw PortableStateException('Recovery envelope повреждён или не прошёл authentication: $lastFailure');
+      }
       throw const WrongRecoveryKeyException();
     }
 
@@ -354,6 +468,8 @@ class PortableLibraryState {
     required LibraryManifest manifest,
     required List<int> recoveryKeyBytes,
     required String keyId,
+    required String activation,
+    required int rotationCounter,
   }) async {
     await _ensureFormat(root);
     _validateAccountKey(manifest.accountEncryptionKey);
@@ -373,6 +489,11 @@ class PortableLibraryState {
       'accountId': manifest.accountId,
       'originatingDeviceId': manifest.deviceId,
       'keyId': keyId,
+      'activation': activation,
+      'rotationRevision': <String, dynamic>{
+        'counter': rotationCounter,
+        'deviceId': manifest.deviceId,
+      },
       'generation': generation,
       'createdAt': DateTime.now().toUtc().toIso8601String(),
     };
@@ -400,6 +521,80 @@ class PortableLibraryState {
     if (clear['accountEncryptionKey'] != manifest.accountEncryptionKey) {
       throw const PortableStateException('Recovery envelope не прошёл read-after-write verification');
     }
+  }
+
+  Future<List<_RecoveryEnvelopeCandidate>> _recoveryEnvelopeCandidates(
+    LibraryRoot root,
+    Set<String> namespaces, {
+    required bool includePending,
+  }) async {
+    final result = <_RecoveryEnvelopeCandidate>[];
+    final sortedNamespaces = namespaces.toList()..sort();
+    for (final namespace in sortedNamespaces) {
+      for (final generationName in const <String>['current', 'previous']) {
+        final path = '$portableRecoveryDirectory/$namespace/$generationName';
+        final raw = await _provider.readServiceFile(root, path);
+        if (raw == null) continue;
+        try {
+          final envelope = _jsonObject(raw, path);
+          if (envelope['kind'] != 'recovery-envelope') continue;
+          final accountId = envelope['accountId']?.toString().trim() ?? '';
+          final keyId = envelope['keyId']?.toString().trim() ?? '';
+          final activation = envelope['activation']?.toString() ?? '';
+          if (accountId.isEmpty ||
+              keyId.isEmpty ||
+              (activation != 'active' && !(includePending && activation == 'pending'))) {
+            continue;
+          }
+          final rotation = _rotationRevision(envelope);
+          if (rotation.$2 != envelope['originatingDeviceId']) continue;
+          result.add(
+            _RecoveryEnvelopeCandidate(
+              envelope: envelope,
+              accountId: accountId,
+              keyId: keyId,
+              rotationCounter: rotation.$1,
+              rotationDeviceId: rotation.$2,
+              generationName: generationName,
+            ),
+          );
+        } catch (_) {
+          // A malformed current generation can still fall back to previous.
+        }
+      }
+    }
+    return result;
+  }
+
+  (int, String) _rotationRevision(Map<String, dynamic> envelope) {
+    final raw = envelope['rotationRevision'];
+    if (raw is! Map) {
+      throw const PortableStateException('Recovery envelope не содержит rotationRevision');
+    }
+    final revision = Map<String, dynamic>.from(raw);
+    final counter = (revision['counter'] as num?)?.toInt();
+    final deviceId = revision['deviceId']?.toString().trim() ?? '';
+    if (counter == null || counter < 0 || deviceId.isEmpty) {
+      throw const PortableStateException('Некорректный recovery rotationRevision');
+    }
+    return (counter, deviceId);
+  }
+
+  int _compareRecoveryCandidates(
+    _RecoveryEnvelopeCandidate left,
+    _RecoveryEnvelopeCandidate right,
+  ) {
+    final counterOrder = left.rotationCounter.compareTo(right.rotationCounter);
+    if (counterOrder != 0) return counterOrder;
+    final deviceOrder = left.rotationDeviceId.compareTo(right.rotationDeviceId);
+    if (deviceOrder != 0) return deviceOrder;
+    final generationOrder =
+        ((left.envelope['generation'] as num?)?.toInt() ?? 0).compareTo(
+          (right.envelope['generation'] as num?)?.toInt() ?? 0,
+        );
+    if (generationOrder != 0) return generationOrder;
+    if (left.generationName == right.generationName) return 0;
+    return left.generationName == 'previous' ? -1 : 1;
   }
 
   Future<List<LibraryManifest>> _loadSnapshots({
@@ -541,11 +736,13 @@ class PortableLibraryState {
       'accountId',
       'originatingDeviceId',
       if (source.containsKey('keyId')) 'keyId',
+      if (source.containsKey('activation')) 'activation',
+      if (source.containsKey('rotationRevision')) 'rotationRevision',
       'generation',
       if (source.containsKey('revision')) 'revision',
       'createdAt',
     ];
-    return keys.map((key) => '$key=${source[key]?.toString() ?? ''}').join('\n');
+    return keys.map((key) => '$key=${jsonEncode(source[key])}').join('\n');
   }
 
   Future<void> _ensureFormat(LibraryRoot root) async {
