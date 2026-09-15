@@ -357,9 +357,8 @@ class PortableLibraryState {
     for (final candidateAccountId in matchingAccounts) {
       final accountCandidates = candidates.where((candidate) => candidate.accountId == candidateAccountId).toList()
         ..sort(_compareRecoveryCandidates);
-      final requestedCandidates =
-          accountCandidates.where((candidate) => candidate.keyId == requestedKeyId).toList()
-            ..sort(_compareRecoveryCandidates);
+      final requestedCandidates = accountCandidates.where((candidate) => candidate.keyId == requestedKeyId).toList()
+        ..sort(_compareRecoveryCandidates);
 
       String? recoveredAccountKey;
       for (final candidate in requestedCandidates.reversed) {
