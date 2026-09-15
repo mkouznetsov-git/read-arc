@@ -12,6 +12,7 @@ LibraryRoot, а .readarc хранит только encrypted portable metadata.
 - per-installation state/deviceId/current|previous;
 - per-installation recovery/deviceId/current|previous;
 - AES-256-GCM, fresh nonce, authenticated headers и HKDF-SHA256 domains;
+- account-key-authenticated rotationAuth отклоняет forged high-revision recovery envelopes;
 - 256-bit Base32 Recovery Key с checksum;
 - encrypted account-key envelope;
 - recovery через Recovery Key и существующий 6-digit pairing;

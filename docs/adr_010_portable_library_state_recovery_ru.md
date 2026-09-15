@@ -49,12 +49,18 @@ Snapshot и recovery envelope используют AES-256-GCM из cryptography
 HKDF-SHA256 с отдельными domains:
 
 - readarc-portable-state-v1;
-- readarc-recovery-envelope-v1.
+- readarc-recovery-envelope-v1;
+- readarc-recovery-rotation-auth-v1.
 
 AAD аутентифицирует format version, kind, crypto suite, accountId,
 originating deviceId, generation, revision/keyId, activation,
-rotationRevision и creation timestamp. Ciphertext или header нельзя
-незаметно изменить.
+rotationRevision, rotationAuth и creation timestamp. Ciphertext или header
+нельзя незаметно изменить. rotationAuth — HMAC-SHA256 под отдельным
+HKDF-derived account-key domain: только такая аутентифицированная запись может
+отозвать старый Recovery Key. Подложенная высокая rotationRevision без
+account key игнорируется и не может заблокировать recovery. Этот MAC защищает
+только recovery-rotation metadata и не используется как device identity или
+sync-envelope signature.
 
 Recovery Key — случайные 256 bit, Base32 без неоднозначных символов, с
 32-bit checksum и префиксом версии RA1. Это не пароль, password KDF не

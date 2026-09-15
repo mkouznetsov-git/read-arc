@@ -87,6 +87,7 @@ class PortableLibraryState {
   static const formatVersion = 1;
   static const snapshotDomain = 'readarc-portable-state-v1';
   static const recoveryDomain = 'readarc-recovery-envelope-v1';
+  static const recoveryRotationAuthDomain = 'readarc-recovery-rotation-auth-v1';
   static const algorithm = 'AES-256-GCM';
   static const derivation = 'HKDF-SHA256';
   static const _recoveryPrefix = 'RA1';
@@ -356,15 +357,47 @@ class PortableLibraryState {
     for (final candidateAccountId in matchingAccounts) {
       final accountCandidates = candidates.where((candidate) => candidate.accountId == candidateAccountId).toList()
         ..sort(_compareRecoveryCandidates);
-      if (accountCandidates.isEmpty) continue;
-      final newest = accountCandidates.last;
+      final requestedCandidates =
+          accountCandidates.where((candidate) => candidate.keyId == requestedKeyId).toList()
+            ..sort(_compareRecoveryCandidates);
+
+      String? recoveredAccountKey;
+      for (final candidate in requestedCandidates.reversed) {
+        try {
+          final clear = await _decryptJson(
+            envelope: candidate.envelope,
+            inputKey: keyBytes,
+            expectedDomain: recoveryDomain,
+          );
+          final candidateAccountKey = clear['accountEncryptionKey']?.toString().trim() ?? '';
+          _validateAccountKey(candidateAccountKey);
+          recoveredAccountKey = candidateAccountKey;
+          break;
+        } catch (error) {
+          lastFailure = error;
+        }
+      }
+      if (recoveredAccountKey == null) continue;
+
+      final authenticatedCandidates = <_RecoveryEnvelopeCandidate>[];
+      for (final candidate in accountCandidates) {
+        if (await _hasValidRotationAuth(candidate.envelope, recoveredAccountKey)) {
+          authenticatedCandidates.add(candidate);
+        }
+      }
+      authenticatedCandidates.sort(_compareRecoveryCandidates);
+      if (authenticatedCandidates.isEmpty) {
+        lastFailure = const PortableStateException('Recovery rotation metadata не прошли authentication');
+        continue;
+      }
+      final newest = authenticatedCandidates.last;
       if (newest.keyId != requestedKeyId) {
-        // The supplied key belonged to this account, but a causally newer
-        // confirmed rotation superseded it.
+        // Only an account-key-authenticated, causally newer rotation can
+        // supersede the supplied key. Unauthenticated files are ignored.
         continue;
       }
       final newestCandidates =
-          accountCandidates
+          authenticatedCandidates
               .where(
                 (candidate) =>
                     candidate.keyId == requestedKeyId &&
@@ -383,6 +416,9 @@ class PortableLibraryState {
             inputKey: keyBytes,
             expectedDomain: recoveryDomain,
           );
+          if (recovered['accountEncryptionKey'] != recoveredAccountKey) {
+            throw const PortableStateException('Recovery envelope account key mismatch');
+          }
           recovered['accountId'] = candidate.accountId;
           break;
         } catch (error) {
@@ -490,6 +526,7 @@ class PortableLibraryState {
       'generation': generation,
       'createdAt': DateTime.now().toUtc().toIso8601String(),
     };
+    header['rotationAuth'] = await _recoveryRotationAuth(header, manifest.accountEncryptionKey);
     final encrypted = await _encryptJson(
       payload: <String, dynamic>{'accountEncryptionKey': manifest.accountEncryptionKey},
       inputKey: recoveryKeyBytes,
@@ -571,6 +608,42 @@ class PortableLibraryState {
       throw const PortableStateException('Некорректный recovery rotationRevision');
     }
     return (counter, deviceId);
+  }
+
+  Future<String> _recoveryRotationAuth(Map<String, dynamic> envelope, String accountEncryptionKey) async {
+    final accountId = envelope['accountId']?.toString().trim() ?? '';
+    if (accountId.isEmpty) {
+      throw const PortableStateException('Recovery rotation accountId пуст');
+    }
+    final header = Map<String, dynamic>.from(envelope)
+      ..remove('rotationAuth')
+      ..remove('nonce')
+      ..remove('ciphertext')
+      ..remove('mac');
+    final authenticationKey = await _deriveKey(
+      _decodeBase64Url(accountEncryptionKey),
+      domain: recoveryRotationAuthDomain,
+      accountId: accountId,
+    );
+    final mac = crypto.Hmac(crypto.sha256, authenticationKey).convert(utf8.encode(_aad(header))).bytes;
+    return _base64Url(mac);
+  }
+
+  Future<bool> _hasValidRotationAuth(Map<String, dynamic> envelope, String accountEncryptionKey) async {
+    try {
+      final actual = _decodeBase64Url(envelope['rotationAuth']?.toString() ?? '');
+      final expected = _decodeBase64Url(await _recoveryRotationAuth(envelope, accountEncryptionKey));
+      if (actual.length != expected.length || actual.isEmpty) return false;
+      var difference = 0;
+      for (var index = 0; index < expected.length; index++) {
+        difference |= actual[index] ^ expected[index];
+      }
+      return difference == 0;
+    } on PortableStateException {
+      return false;
+    } on FormatException {
+      return false;
+    }
   }
 
   int _compareRecoveryCandidates(_RecoveryEnvelopeCandidate left, _RecoveryEnvelopeCandidate right) {
@@ -727,6 +800,7 @@ class PortableLibraryState {
       if (source.containsKey('keyId')) 'keyId',
       if (source.containsKey('activation')) 'activation',
       if (source.containsKey('rotationRevision')) 'rotationRevision',
+      if (source.containsKey('rotationAuth')) 'rotationAuth',
       'generation',
       if (source.containsKey('revision')) 'revision',
       'createdAt',

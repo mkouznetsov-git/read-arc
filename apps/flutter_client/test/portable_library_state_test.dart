@@ -231,6 +231,34 @@ void main() {
       );
     });
 
+    test('unauthenticated newer rotation cannot revoke a valid Recovery Key', () async {
+      final portable = PortableLibraryState(provider);
+      final manifest = _manifest(deviceId: 'device-a');
+      await portable.writeSnapshot(libraryRoot, manifest);
+      final recovery = await portable.createRecoveryKey(root: libraryRoot, manifest: manifest);
+      await portable.activateRecoveryKey(root: libraryRoot, manifest: manifest, recoveryKey: recovery.displayKey);
+
+      final source = File('${root.path}/.readarc/recovery/device-a/current');
+      final forged = jsonDecode(await source.readAsString()) as Map<String, dynamic>;
+      forged['originatingDeviceId'] = 'attacker-device';
+      forged['keyId'] = 'attacker-key';
+      forged['rotationRevision'] = <String, dynamic>{'counter': 999999, 'deviceId': 'attacker-device'};
+      forged['generation'] = 999999;
+      forged.remove('rotationAuth');
+      final forgedFile = File('${root.path}/.readarc/recovery/attacker-device/current');
+      await forgedFile.parent.create(recursive: true);
+      await forgedFile.writeAsString(jsonEncode(forged), flush: true);
+
+      expect(
+        await portable.verifyRecoveryKey(
+          root: libraryRoot,
+          recoveryKey: recovery.displayKey,
+          expectedAccountId: manifest.accountId,
+        ),
+        isTrue,
+      );
+    });
+
     test('recovery envelope falls back to previous and rejects double corruption', () async {
       final portable = PortableLibraryState(provider);
       final manifest = _manifest(deviceId: 'device-a');
