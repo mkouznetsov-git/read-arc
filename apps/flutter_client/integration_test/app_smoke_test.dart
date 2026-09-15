@@ -18,9 +18,13 @@ void main() {
   testWidgets('ReadArc migrates a pre-Sprint-46 manifest and opens the library', (tester) async {
     final errors = <FlutterErrorDetails>[];
     final previousHandler = FlutterError.onError;
-    FlutterError.onError = errors.add;
+    FlutterError.onError = (details) {
+      errors.add(details);
+      previousHandler?.call(details);
+    };
     addTearDown(() => FlutterError.onError = previousHandler);
 
+    final legacyAccountKey = base64UrlEncode(List<int>.generate(32, (index) => index + 1)).replaceAll('=', '');
     final directory = await Directory.systemTemp.createTemp('readarc-platform-upgrade-smoke-');
     addTearDown(() async {
       if (await directory.exists()) await directory.delete(recursive: true);
@@ -56,7 +60,7 @@ void main() {
     final legacy =
         LibraryManifest(
             accountId: 'legacy-account',
-            accountEncryptionKey: 'legacy-account-secret',
+            accountEncryptionKey: legacyAccountKey,
             deviceId: 'legacy-device',
             deviceName: 'Legacy device',
             deviceSigningPublicKey: 'legacy-public',
@@ -68,7 +72,7 @@ void main() {
             books: [legacyBook],
           ).toJson()
           ..remove('schemaVersion')
-          ..['accountEncryptionKey'] = 'legacy-account-secret'
+          ..['accountEncryptionKey'] = legacyAccountKey
           ..['deviceSigningPrivateKey'] = 'legacy-device-secret';
     final legacyBookJson = (legacy['books'] as List).single as Map<String, dynamic>;
     legacyBookJson
@@ -96,6 +100,10 @@ void main() {
         EnginePhase.sendSemanticsUpdate,
         const Duration(seconds: 20),
       );
+      // Restore the binding's handler before assertions. Otherwise a failed
+      // expectation is captured by this test's own error collector and the
+      // integration runner reports only a misleading two-minute timeout.
+      FlutterError.onError = previousHandler;
 
       expect(find.byType(MaterialApp), findsOneWidget);
       expect(find.byType(app.LibraryScreen), findsOneWidget);
@@ -108,7 +116,7 @@ void main() {
       expect(migrated.deviceId, 'legacy-device');
       expect(migrated.deviceName, 'Legacy device');
       expect(migrated.deviceSigningPublicKey, 'legacy-public');
-      expect(migrated.accountEncryptionKey, 'legacy-account-secret');
+      expect(migrated.accountEncryptionKey, legacyAccountKey);
       expect(migrated.deviceSigningPrivateKey, 'legacy-device-secret');
       expect(migrated.trustedDevices.map((device) => device.deviceId), containsAll(['legacy-device', 'paired-device']));
       expect(migrated.books, hasLength(1));
@@ -126,7 +134,7 @@ void main() {
       final migratedRaw = await manifestFile.readAsString();
       final migratedJson = jsonDecode(migratedRaw) as Map<String, dynamic>;
       expect(migratedJson['schemaVersion'], LibraryManifest.currentSchemaVersion);
-      expect(migratedRaw, isNot(contains('legacy-account-secret')));
+      expect(migratedRaw, isNot(contains(legacyAccountKey)));
       expect(migratedRaw, isNot(contains('legacy-device-secret')));
       final backupDirectory = Directory('${directory.path}/manifest_backups');
       expect(await backupDirectory.exists(), isTrue);
@@ -141,7 +149,10 @@ void main() {
   testWidgets('ReadArc creates its initial manifest and asks for a user-owned library root', (tester) async {
     final errors = <FlutterErrorDetails>[];
     final previousHandler = FlutterError.onError;
-    FlutterError.onError = errors.add;
+    FlutterError.onError = (details) {
+      errors.add(details);
+      previousHandler?.call(details);
+    };
     addTearDown(() => FlutterError.onError = previousHandler);
 
     final directory = await Directory.systemTemp.createTemp('readarc-platform-smoke-');
@@ -160,6 +171,10 @@ void main() {
         EnginePhase.sendSemanticsUpdate,
         const Duration(seconds: 20),
       );
+      // Restore the binding's handler before assertions. Otherwise a failed
+      // expectation is captured by this test's own error collector and the
+      // integration runner reports only a misleading two-minute timeout.
+      FlutterError.onError = previousHandler;
 
       expect(find.byType(MaterialApp), findsOneWidget);
       expect(find.byType(app.LibraryScreen), findsOneWidget);

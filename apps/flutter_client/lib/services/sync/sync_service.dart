@@ -687,7 +687,8 @@ class SyncService {
       ownerDeviceName: ownerDeviceName,
       ownerDevicePublicKey: ownerDevicePublicKey,
     );
-    _appendLog('Pairing выполнен. Аккаунт подключён автоматически.');
+    await _storage.recoverPortableStateAfterPairing();
+    _appendLog('Pairing выполнен. Аккаунт и portable state восстановлены.');
     await connect(relayUrl: relayUrl);
     await refreshMetadata(reason: 'pairing_completed');
     return PairingClaimResult(

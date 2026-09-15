@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
@@ -18,6 +19,7 @@ import 'library_repository.dart';
 import 'library_migration.dart';
 import 'library_scanner.dart';
 import 'library_storage.dart';
+import 'portable_library_state.dart';
 
 class StorageService {
   StorageService({
@@ -54,6 +56,11 @@ class StorageService {
   LibraryRoot? _rootCache;
   bool _rootLoaded = false;
   Future<LibraryScanResult?>? _scanFuture;
+  late final PortableLibraryState _portableState = PortableLibraryState(_libraryStorageProvider);
+  Timer? _portableSnapshotDebounce;
+  Future<void> _portableWriteTail = Future<void>.value();
+  bool _portableWritesSuppressed = false;
+  bool _portableStartupDone = false;
 
   LibraryRepository get repository =>
       _repositoryOverride ??
@@ -241,8 +248,15 @@ class StorageService {
     return false;
   }
 
+  Future<LibraryRoot?> chooseLibraryRootCandidate() => _libraryStorageProvider.chooseRoot();
+
+  Future<PortableLibraryInspection> inspectPortableLibrary(LibraryRoot root) async {
+    final manifest = await loadManifest();
+    return _portableState.inspect(root, currentAccountId: manifest.accountId);
+  }
+
   Future<LibraryRoot?> chooseAndConfigureLibrary() async {
-    final selected = await _libraryStorageProvider.chooseRoot();
+    final selected = await chooseLibraryRootCandidate();
     if (selected == null) return null;
     await configureLibraryRoot(selected);
     return selected;
@@ -273,22 +287,37 @@ class StorageService {
     return false;
   }
 
-  Future<void> configureLibraryRoot(LibraryRoot root) async {
-    root = await _libraryStorageProvider.refreshRoot(root);
-    final status = await _libraryStorageProvider.status(root);
-    if (status != LibraryRootStatus.available) {
-      throw LibraryRootAccessException(status, 'Выбранная библиотека недоступна');
-    }
-    final manifest = await loadManifest();
-    final migrator = LegacyLibraryMigrator(provider: _libraryStorageProvider, journalFile: _libraryMigrationFile);
-    await migrator.migrate(target: root, books: manifest.books);
+  Future<void> configureLibraryRoot(LibraryRoot root, {bool bootstrapPortableState = true}) async {
+    final previousSuppression = _portableWritesSuppressed;
+    _portableWritesSuppressed = !bootstrapPortableState;
+    var configured = false;
+    try {
+      root = await _libraryStorageProvider.refreshRoot(root);
+      final status = await _libraryStorageProvider.status(root);
+      if (status != LibraryRootStatus.available) {
+        throw LibraryRootAccessException(status, 'Выбранная библиотека недоступна');
+      }
+      final manifest = await loadManifest();
+      final migrator = LegacyLibraryMigrator(provider: _libraryStorageProvider, journalFile: _libraryMigrationFile);
+      await migrator.migrate(target: root, books: manifest.books);
 
-    // The root becomes canonical only after every legacy source has been copied
-    // and hash-verified. Source files are intentionally retained.
-    await _persistLibraryRoot(root);
-    _rootCache = root;
-    _rootLoaded = true;
-    await refreshLibrary(afterPending: true);
+      // The root becomes canonical only after every legacy source has been
+      // copied and hash-verified. Source files are intentionally retained.
+      await _persistLibraryRoot(root);
+      _rootCache = root;
+      _rootLoaded = true;
+      await refreshLibrary(afterPending: true);
+      if (bootstrapPortableState) await flushPortableState();
+      configured = true;
+    } finally {
+      if (!configured) {
+        _portableWritesSuppressed = previousSuppression;
+      }
+      if (!bootstrapPortableState) {
+        _portableSnapshotDebounce?.cancel();
+        _portableSnapshotDebounce = null;
+      }
+    }
   }
 
   Future<void> _persistLibraryRoot(LibraryRoot root) async {
@@ -497,10 +526,156 @@ class StorageService {
     });
   }
 
-  Future<LibraryManifest> mutateManifest(LibraryManifest Function(LibraryManifest current) update) =>
-      repository.mutate(update);
+  Future<LibraryManifest> mutateManifest(LibraryManifest Function(LibraryManifest current) update) async {
+    final result = await repository.mutate(update);
+    _schedulePortableSnapshot(result);
+    return result;
+  }
 
-  Future<LibraryManifest> replaceManifest(LibraryManifest manifest) => repository.replace(manifest);
+  Future<LibraryManifest> replaceManifest(LibraryManifest manifest) async {
+    final result = await repository.replace(manifest);
+    _schedulePortableSnapshot(result);
+    return result;
+  }
+
+  void _schedulePortableSnapshot(LibraryManifest manifest) {
+    if (_portableWritesSuppressed || !_rootLoaded || _rootCache == null) {
+      return;
+    }
+    _portableSnapshotDebounce?.cancel();
+    _portableSnapshotDebounce = Timer(
+      const Duration(milliseconds: 750),
+      () => unawaited(flushPortableState(manifest: manifest).catchError((_) {})),
+    );
+  }
+
+  Future<void> flushPortableState({LibraryManifest? manifest}) async {
+    if (_portableWritesSuppressed) return;
+    _portableSnapshotDebounce?.cancel();
+    _portableSnapshotDebounce = null;
+    final root = await configuredLibraryRoot();
+    if (root == null) return;
+    final rootState = await _libraryStorageProvider.status(root);
+    if (rootState != LibraryRootStatus.available) {
+      throw LibraryRootAccessException(rootState, 'Library root is not available for portable snapshot');
+    }
+    final snapshot = manifest ?? await repository.read();
+    final previous = _portableWriteTail;
+    final operation = () async {
+      try {
+        await previous;
+      } catch (_) {
+        // A failed provider write must not poison all later checkpoints.
+      }
+      await _portableState.bootstrap(root, snapshot);
+    }();
+    _portableWriteTail = operation.catchError((_) {});
+    await operation;
+  }
+
+  Future<bool> ensurePortableStateOnStartup() async {
+    if (_portableStartupDone) return false;
+    final root = await configuredLibraryRoot();
+    if (root == null) return false;
+    final local = await loadManifest();
+    final inspection = await _portableState.inspect(root, currentAccountId: local.accountId);
+    if (inspection.disposition == PortableLibraryDisposition.empty) {
+      await _portableState.bootstrap(root, local);
+    } else if (inspection.disposition == PortableLibraryDisposition.currentAccount) {
+      final merged = await _portableState.mergeSnapshots(root: root, local: local);
+      await repository.replace(merged);
+      await refreshLibrary(afterPending: true);
+    } else if (inspection.disposition == PortableLibraryDisposition.incomplete ||
+        inspection.disposition == PortableLibraryDisposition.unsupported) {
+      throw PortableStateException(inspection.message ?? 'Portable state повреждён');
+    } else {
+      return false;
+    }
+    _portableStartupDone = true;
+    return !await _portableState.hasRecoveryEnvelope(root, local.accountId);
+  }
+
+  Future<RecoveryKeyMaterial> createRecoveryKey() async {
+    if (_portableWritesSuppressed) {
+      throw StateError('Сначала завершите восстановление аккаунта или явно создайте новый аккаунт');
+    }
+    final root = await configuredLibraryRoot();
+    if (root == null) {
+      throw StateError('Сначала выберите библиотеку ReadArc');
+    }
+    final merged = await _portableState.mergeSnapshots(root: root, local: await loadManifest());
+    await repository.replace(merged);
+    final manifest = await mutateManifest((current) => current.copyWith(logicalClock: current.logicalClock + 1));
+    await flushPortableState(manifest: manifest);
+    return _portableState.createRecoveryKey(root: root, manifest: manifest);
+  }
+
+  Future<void> confirmRecoveryKey(String recoveryKey) async {
+    final root = await configuredLibraryRoot();
+    if (root == null) {
+      throw StateError('Сначала выберите библиотеку ReadArc');
+    }
+    await _portableState.activateRecoveryKey(root: root, manifest: await loadManifest(), recoveryKey: recoveryKey);
+  }
+
+  Future<bool> verifyRecoveryKey(String recoveryKey, {bool includePending = false}) async {
+    final root = await configuredLibraryRoot();
+    if (root == null) return false;
+    final manifest = await loadManifest();
+    return _portableState.verifyRecoveryKey(
+      root: root,
+      recoveryKey: recoveryKey,
+      expectedAccountId: manifest.accountId,
+      includePending: includePending,
+    );
+  }
+
+  Future<LibraryManifest> recoverWithRecoveryKey(String recoveryKey) async {
+    final root = await configuredLibraryRoot();
+    if (root == null) {
+      throw StateError('Сначала выберите прежнюю библиотеку ReadArc');
+    }
+    final freshInstallation = await loadManifest();
+    final recovered = await _portableState.recover(
+      root: root,
+      recoveryKey: recoveryKey,
+      freshInstallation: freshInstallation,
+    );
+    await repository.replaceAfterAuthenticatedRecovery(recovered.manifest);
+    await refreshLibrary(afterPending: true);
+    final reconciled = await loadManifest();
+    _portableWritesSuppressed = false;
+    await flushPortableState(manifest: reconciled);
+    return reconciled;
+  }
+
+  Future<LibraryManifest> recoverPortableStateAfterPairing() async {
+    final root = await configuredLibraryRoot();
+    final local = await loadManifest();
+    if (root == null) return local;
+    final inspection = await _portableState.inspect(root, currentAccountId: local.accountId);
+    if (inspection.disposition != PortableLibraryDisposition.currentAccount) {
+      return local;
+    }
+    final merged = await _portableState.mergeSnapshots(root: root, local: local);
+    await repository.replace(merged);
+    await refreshLibrary(afterPending: true);
+    final reconciled = await loadManifest();
+    _portableWritesSuppressed = false;
+    await flushPortableState(manifest: reconciled);
+    return reconciled;
+  }
+
+  Future<void> startNewAccountForPortableLibrary() async {
+    _portableWritesSuppressed = false;
+    await flushPortableState();
+  }
+
+  Future<void> dispose() async {
+    _portableSnapshotDebounce?.cancel();
+    _portableSnapshotDebounce = null;
+    await flushPortableState();
+  }
 
   Future<SyncSettings> loadSyncSettings() async {
     final file = await syncSettingsFile();
@@ -759,6 +934,7 @@ class StorageService {
       }).toList();
       return manifest.copyWith(books: updatedBooks, logicalClock: revision.counter);
     });
+    await flushPortableState();
   }
 
   Future<LibraryManifest> removeLocalBookCopy(String bookId) async {

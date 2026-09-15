@@ -240,3 +240,20 @@ macOS DMG/PKG build
 - Проверить синхронизацию EPUB progress между устройствами.
 - Проверить копирование видимого фрагмента в TXT, FB2 и EPUB.
 - Проверить скачивание книги 5–10 MB и сравнить скорость со Sprint 15.
+
+
+## Sprint 49B portable/reinstall regression set
+
+The automated suite must cover encrypted snapshot content, fresh nonces,
+authenticated header/tag rejection, wrong Recovery Key, corrupt/truncated
+current fallback to previous, interrupted publish rollback, two independent
+device namespaces, duplicate/stale deterministic merge, bookmark and book
+tombstones, remote-only books, new device identity, full sandbox and secure
+store loss, SHA-256 rename reconciliation, missing root, incomplete format and
+unsupported future schema.
+
+The verified pipeline remains unchanged: formatter, analyzer, relay and Flutter
+tests gate Android emulator, macOS smoke, iOS unsigned build, verified packages,
+packaged upgrades and reader regressions. Real SAF/iCloud/third-party File
+Provider reinstall recovery is recorded as a manual certification gap until it
+is executed on physical devices.
