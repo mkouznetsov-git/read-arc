@@ -596,6 +596,9 @@ class StorageService {
   }
 
   Future<RecoveryKeyMaterial> createRecoveryKey() async {
+    if (_portableWritesSuppressed) {
+      throw StateError('Сначала завершите восстановление аккаунта или явно создайте новый аккаунт');
+    }
     final root = await configuredLibraryRoot();
     if (root == null) {
       throw StateError('Сначала выберите библиотеку ReadArc');

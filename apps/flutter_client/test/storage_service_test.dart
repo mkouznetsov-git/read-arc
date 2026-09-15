@@ -306,6 +306,7 @@ void main() {
     await storage.configureLibraryRoot(root, bootstrapPortableState: false);
     await storage.mutateManifest((current) => current.copyWith(logicalClock: current.logicalClock + 1));
     await storage.flushPortableState();
+    await expectLater(storage.createRecoveryKey(), throwsStateError);
     await storage.dispose();
 
     final current = File(p.join(library.path, '.readarc', 'state', manifest.deviceId, 'current'));
