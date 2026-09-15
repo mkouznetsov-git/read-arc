@@ -287,6 +287,34 @@ void main() {
     }
   });
 
+  test('recovery-required root stays portable-write-suppressed until an account choice succeeds', () async {
+    final application = await Directory.systemTemp.createTemp('readarc-recovery-pending-app-');
+    final library = await Directory.systemTemp.createTemp('readarc-recovery-pending-root-');
+    addTearDown(() async {
+      for (final directory in [application, library]) {
+        if (await directory.exists()) await directory.delete(recursive: true);
+      }
+    });
+    final storage = StorageService(
+      appDirectory: () async => application,
+      secretStore: _MemorySecretStore(),
+      libraryStorageProvider: LocalDirectoryLibraryStorageProvider(),
+    );
+    final manifest = await storage.loadManifest();
+    final root = LibraryRoot(kind: LibraryRootKind.desktopPath, locator: library.path, displayName: 'Library');
+
+    await storage.configureLibraryRoot(root, bootstrapPortableState: false);
+    await storage.mutateManifest((current) => current.copyWith(logicalClock: current.logicalClock + 1));
+    await storage.flushPortableState();
+    await storage.dispose();
+
+    final current = File(p.join(library.path, '.readarc', 'state', manifest.deviceId, 'current'));
+    expect(await current.exists(), isFalse, reason: 'pairing cancellation/background must not publish a fresh account');
+
+    await storage.startNewAccountForPortableLibrary();
+    expect(await current.exists(), isTrue, reason: 'an explicit new-account choice enables portable writes');
+  });
+
   test('verified transfer destination is committed to user root and incoming cache is removed', () async {
     final application = await Directory.systemTemp.createTemp('readarc-transfer-app-');
     final library = await Directory.systemTemp.createTemp('readarc-transfer-root-');

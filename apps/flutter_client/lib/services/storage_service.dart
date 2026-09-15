@@ -289,7 +289,8 @@ class StorageService {
 
   Future<void> configureLibraryRoot(LibraryRoot root, {bool bootstrapPortableState = true}) async {
     final previousSuppression = _portableWritesSuppressed;
-    if (!bootstrapPortableState) _portableWritesSuppressed = true;
+    _portableWritesSuppressed = !bootstrapPortableState;
+    var configured = false;
     try {
       root = await _libraryStorageProvider.refreshRoot(root);
       final status = await _libraryStorageProvider.status(root);
@@ -307,8 +308,11 @@ class StorageService {
       _rootLoaded = true;
       await refreshLibrary(afterPending: true);
       if (bootstrapPortableState) await flushPortableState();
+      configured = true;
     } finally {
-      _portableWritesSuppressed = previousSuppression;
+      if (!configured) {
+        _portableWritesSuppressed = previousSuppression;
+      }
       if (!bootstrapPortableState) {
         _portableSnapshotDebounce?.cancel();
         _portableSnapshotDebounce = null;
@@ -546,6 +550,7 @@ class StorageService {
   }
 
   Future<void> flushPortableState({LibraryManifest? manifest}) async {
+    if (_portableWritesSuppressed) return;
     _portableSnapshotDebounce?.cancel();
     _portableSnapshotDebounce = null;
     final root = await configuredLibraryRoot();
@@ -636,6 +641,7 @@ class StorageService {
     await repository.replaceAfterAuthenticatedRecovery(recovered.manifest);
     await refreshLibrary(afterPending: true);
     final reconciled = await loadManifest();
+    _portableWritesSuppressed = false;
     await flushPortableState(manifest: reconciled);
     return reconciled;
   }
@@ -652,11 +658,13 @@ class StorageService {
     await repository.replace(merged);
     await refreshLibrary(afterPending: true);
     final reconciled = await loadManifest();
+    _portableWritesSuppressed = false;
     await flushPortableState(manifest: reconciled);
     return reconciled;
   }
 
   Future<void> startNewAccountForPortableLibrary() async {
+    _portableWritesSuppressed = false;
     await flushPortableState();
   }
 
