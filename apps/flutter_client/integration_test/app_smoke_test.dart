@@ -24,9 +24,7 @@ void main() {
     };
     addTearDown(() => FlutterError.onError = previousHandler);
 
-    final legacyAccountKey = base64UrlEncode(
-      List<int>.generate(32, (index) => index + 1),
-    ).replaceAll('=', '');
+    final legacyAccountKey = base64UrlEncode(List<int>.generate(32, (index) => index + 1)).replaceAll('=', '');
     final directory = await Directory.systemTemp.createTemp('readarc-platform-upgrade-smoke-');
     addTearDown(() async {
       if (await directory.exists()) await directory.delete(recursive: true);

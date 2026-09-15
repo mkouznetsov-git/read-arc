@@ -77,7 +77,6 @@ jobs:
         run: |
           dart format apps/flutter_client/lib apps/flutter_client/test apps/flutter_client/integration_test
           git diff -- apps/flutter_client/lib apps/flutter_client/test apps/flutter_client/integration_test > test-results/dart-format.patch
-          cat test-results/dart-format.patch
       - name: Upload quality logs
         if: always()
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
