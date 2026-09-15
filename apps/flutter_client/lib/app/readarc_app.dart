@@ -8570,10 +8570,7 @@ class _SyncScreenState extends State<SyncScreen> {
     setState(() => _busy = true);
     try {
       final material = await widget.storage.createRecoveryKey();
-      final verified = await widget.storage.verifyRecoveryKey(
-        material.displayKey,
-        includePending: true,
-      );
+      final verified = await widget.storage.verifyRecoveryKey(material.displayKey, includePending: true);
       if (!verified) {
         throw StateError('Созданный Recovery Key не прошёл проверку');
       }

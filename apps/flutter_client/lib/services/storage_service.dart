@@ -595,14 +595,9 @@ class StorageService {
     if (root == null) {
       throw StateError('Сначала выберите библиотеку ReadArc');
     }
-    final merged = await _portableState.mergeSnapshots(
-      root: root,
-      local: await loadManifest(),
-    );
+    final merged = await _portableState.mergeSnapshots(root: root, local: await loadManifest());
     await repository.replace(merged);
-    final manifest = await mutateManifest(
-      (current) => current.copyWith(logicalClock: current.logicalClock + 1),
-    );
+    final manifest = await mutateManifest((current) => current.copyWith(logicalClock: current.logicalClock + 1));
     await flushPortableState(manifest: manifest);
     return _portableState.createRecoveryKey(root: root, manifest: manifest);
   }
@@ -612,11 +607,7 @@ class StorageService {
     if (root == null) {
       throw StateError('Сначала выберите библиотеку ReadArc');
     }
-    await _portableState.activateRecoveryKey(
-      root: root,
-      manifest: await loadManifest(),
-      recoveryKey: recoveryKey,
-    );
+    await _portableState.activateRecoveryKey(root: root, manifest: await loadManifest(), recoveryKey: recoveryKey);
   }
 
   Future<bool> verifyRecoveryKey(String recoveryKey, {bool includePending = false}) async {

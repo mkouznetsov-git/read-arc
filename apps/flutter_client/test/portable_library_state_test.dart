@@ -136,11 +136,7 @@ void main() {
       final manifest = _manifest(deviceId: 'device-a');
       await portable.writeSnapshot(libraryRoot, manifest);
       final oldKey = await portable.createRecoveryKey(root: libraryRoot, manifest: manifest);
-      await portable.activateRecoveryKey(
-        root: libraryRoot,
-        manifest: manifest,
-        recoveryKey: oldKey.displayKey,
-      );
+      await portable.activateRecoveryKey(root: libraryRoot, manifest: manifest, recoveryKey: oldKey.displayKey);
       fail = true;
       await expectLater(portable.createRecoveryKey(root: libraryRoot, manifest: manifest), throwsStateError);
       fail = false;
@@ -159,17 +155,10 @@ void main() {
       final manifest = _manifest(deviceId: 'device-a');
       await portable.writeSnapshot(libraryRoot, manifest);
       final oldKey = await portable.createRecoveryKey(root: libraryRoot, manifest: manifest);
-      await portable.activateRecoveryKey(
-        root: libraryRoot,
-        manifest: manifest,
-        recoveryKey: oldKey.displayKey,
-      );
+      await portable.activateRecoveryKey(root: libraryRoot, manifest: manifest, recoveryKey: oldKey.displayKey);
 
       final rotatedManifest = manifest.copyWith(logicalClock: manifest.logicalClock + 1);
-      final newKey = await portable.createRecoveryKey(
-        root: libraryRoot,
-        manifest: rotatedManifest,
-      );
+      final newKey = await portable.createRecoveryKey(root: libraryRoot, manifest: rotatedManifest);
       expect(
         await portable.verifyRecoveryKey(
           root: libraryRoot,
@@ -196,11 +185,7 @@ void main() {
         isTrue,
       );
 
-      await portable.activateRecoveryKey(
-        root: libraryRoot,
-        manifest: rotatedManifest,
-        recoveryKey: newKey.displayKey,
-      );
+      await portable.activateRecoveryKey(root: libraryRoot, manifest: rotatedManifest, recoveryKey: newKey.displayKey);
       expect(
         await portable.verifyRecoveryKey(
           root: libraryRoot,
@@ -224,17 +209,9 @@ void main() {
       final deviceA = _manifest(deviceId: 'device-a');
       final deviceB = _manifest(deviceId: 'device-b').copyWith(logicalClock: deviceA.logicalClock + 1);
       final oldKey = await portable.createRecoveryKey(root: libraryRoot, manifest: deviceA);
-      await portable.activateRecoveryKey(
-        root: libraryRoot,
-        manifest: deviceA,
-        recoveryKey: oldKey.displayKey,
-      );
+      await portable.activateRecoveryKey(root: libraryRoot, manifest: deviceA, recoveryKey: oldKey.displayKey);
       final newKey = await portable.createRecoveryKey(root: libraryRoot, manifest: deviceB);
-      await portable.activateRecoveryKey(
-        root: libraryRoot,
-        manifest: deviceB,
-        recoveryKey: newKey.displayKey,
-      );
+      await portable.activateRecoveryKey(root: libraryRoot, manifest: deviceB, recoveryKey: newKey.displayKey);
 
       expect(
         await portable.verifyRecoveryKey(
@@ -259,11 +236,7 @@ void main() {
       final manifest = _manifest(deviceId: 'device-a');
       await portable.writeSnapshot(libraryRoot, manifest);
       final recovery = await portable.createRecoveryKey(root: libraryRoot, manifest: manifest);
-      await portable.activateRecoveryKey(
-        root: libraryRoot,
-        manifest: manifest,
-        recoveryKey: recovery.displayKey,
-      );
+      await portable.activateRecoveryKey(root: libraryRoot, manifest: manifest, recoveryKey: recovery.displayKey);
 
       for (final name in const <String>['current', 'previous']) {
         final file = File('${root.path}/.readarc/recovery/device-a/$name');
@@ -298,11 +271,7 @@ void main() {
       final manifest = _manifest(deviceId: 'device-a');
       await portable.writeSnapshot(libraryRoot, manifest);
       final recovery = await portable.createRecoveryKey(root: libraryRoot, manifest: manifest);
-      await portable.activateRecoveryKey(
-        root: libraryRoot,
-        manifest: manifest,
-        recoveryKey: recovery.displayKey,
-      );
+      await portable.activateRecoveryKey(root: libraryRoot, manifest: manifest, recoveryKey: recovery.displayKey);
       final raw = await _readReadArc(root);
       expect(raw, isNot(contains(recovery.displayKey)));
       expect(raw, isNot(contains(manifest.accountEncryptionKey)));
@@ -334,11 +303,7 @@ void main() {
       final old = _manifest(deviceId: 'device-a', privateKey: 'OLD-PRIVATE');
       await portable.writeSnapshot(libraryRoot, old);
       final recovery = await portable.createRecoveryKey(root: libraryRoot, manifest: old);
-      await portable.activateRecoveryKey(
-        root: libraryRoot,
-        manifest: old,
-        recoveryKey: recovery.displayKey,
-      );
+      await portable.activateRecoveryKey(root: libraryRoot, manifest: old, recoveryKey: recovery.displayKey);
       final fresh = _manifest(deviceId: 'device-new', privateKey: 'NEW-PRIVATE', books: const []);
       final recovered = await portable.recover(
         root: libraryRoot,

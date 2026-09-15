@@ -342,24 +342,19 @@ class PortableLibraryState {
     if (namespaces.isEmpty) {
       throw const PortableStateException('Recovery envelope не найден; нужен другой trusted device');
     }
-    final candidates = await _recoveryEnvelopeCandidates(
-      root,
-      namespaces,
-      includePending: includePending,
-    );
-    final matchingAccounts = candidates
-        .where((candidate) => candidate.keyId == requestedKeyId)
-        .map((candidate) => candidate.accountId)
-        .toSet()
-        .toList()
-      ..sort();
+    final candidates = await _recoveryEnvelopeCandidates(root, namespaces, includePending: includePending);
+    final matchingAccounts =
+        candidates
+            .where((candidate) => candidate.keyId == requestedKeyId)
+            .map((candidate) => candidate.accountId)
+            .toSet()
+            .toList()
+          ..sort();
 
     Map<String, dynamic>? recovered;
     Object? lastFailure;
     for (final candidateAccountId in matchingAccounts) {
-      final accountCandidates = candidates
-          .where((candidate) => candidate.accountId == candidateAccountId)
-          .toList()
+      final accountCandidates = candidates.where((candidate) => candidate.accountId == candidateAccountId).toList()
         ..sort(_compareRecoveryCandidates);
       if (accountCandidates.isEmpty) continue;
       final newest = accountCandidates.last;
@@ -368,18 +363,19 @@ class PortableLibraryState {
         // confirmed rotation superseded it.
         continue;
       }
-      final newestCandidates = accountCandidates
-          .where(
-            (candidate) =>
-                candidate.keyId == requestedKeyId &&
-                candidate.rotationCounter == newest.rotationCounter &&
-                candidate.rotationDeviceId == newest.rotationDeviceId,
-          )
-          .toList()
-        ..sort((left, right) {
-          if (left.generationName == right.generationName) return 0;
-          return left.generationName == 'current' ? -1 : 1;
-        });
+      final newestCandidates =
+          accountCandidates
+              .where(
+                (candidate) =>
+                    candidate.keyId == requestedKeyId &&
+                    candidate.rotationCounter == newest.rotationCounter &&
+                    candidate.rotationDeviceId == newest.rotationDeviceId,
+              )
+              .toList()
+            ..sort((left, right) {
+              if (left.generationName == right.generationName) return 0;
+              return left.generationName == 'current' ? -1 : 1;
+            });
       for (final candidate in newestCandidates) {
         try {
           recovered = await _decryptJson(
@@ -490,10 +486,7 @@ class PortableLibraryState {
       'originatingDeviceId': manifest.deviceId,
       'keyId': keyId,
       'activation': activation,
-      'rotationRevision': <String, dynamic>{
-        'counter': rotationCounter,
-        'deviceId': manifest.deviceId,
-      },
+      'rotationRevision': <String, dynamic>{'counter': rotationCounter, 'deviceId': manifest.deviceId},
       'generation': generation,
       'createdAt': DateTime.now().toUtc().toIso8601String(),
     };
@@ -580,18 +573,14 @@ class PortableLibraryState {
     return (counter, deviceId);
   }
 
-  int _compareRecoveryCandidates(
-    _RecoveryEnvelopeCandidate left,
-    _RecoveryEnvelopeCandidate right,
-  ) {
+  int _compareRecoveryCandidates(_RecoveryEnvelopeCandidate left, _RecoveryEnvelopeCandidate right) {
     final counterOrder = left.rotationCounter.compareTo(right.rotationCounter);
     if (counterOrder != 0) return counterOrder;
     final deviceOrder = left.rotationDeviceId.compareTo(right.rotationDeviceId);
     if (deviceOrder != 0) return deviceOrder;
-    final generationOrder =
-        ((left.envelope['generation'] as num?)?.toInt() ?? 0).compareTo(
-          (right.envelope['generation'] as num?)?.toInt() ?? 0,
-        );
+    final generationOrder = ((left.envelope['generation'] as num?)?.toInt() ?? 0).compareTo(
+      (right.envelope['generation'] as num?)?.toInt() ?? 0,
+    );
     if (generationOrder != 0) return generationOrder;
     if (left.generationName == right.generationName) return 0;
     return left.generationName == 'previous' ? -1 : 1;
