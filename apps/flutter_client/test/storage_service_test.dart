@@ -341,11 +341,7 @@ void main() {
     await expectLater(
       storage.flushPortableState(),
       throwsA(
-        isA<LibraryRootAccessException>().having(
-          (error) => error.status,
-          'status',
-          LibraryRootStatus.permissionLost,
-        ),
+        isA<LibraryRootAccessException>().having((error) => error.status, 'status', LibraryRootStatus.permissionLost),
       ),
     );
 
