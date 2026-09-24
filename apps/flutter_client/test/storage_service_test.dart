@@ -146,10 +146,13 @@ void main() {
         bootstrapPortableState: false,
       );
       final installation = await storage.loadManifest();
+      final oldAccountKey = base64UrlEncode(Uint8List(32)).replaceAll('=', '');
+      final pairedAccountKey = base64UrlEncode(Uint8List.fromList(List<int>.generate(32, (index) => index + 1)))
+          .replaceAll('=', '');
       await storage.mutateManifest(
         (current) => current.copyWith(
           accountId: 'old-account',
-          accountEncryptionKey: 'old-key',
+          accountEncryptionKey: oldAccountKey,
           logicalClock: 500,
           appliedOperationIds: const ['old-account-operation'],
           trustedDevices: [
@@ -172,7 +175,7 @@ void main() {
 
       await storage.replaceAccountFromPairing(
         accountId: 'paired-account',
-        accountEncryptionKey: 'paired-key',
+        accountEncryptionKey: pairedAccountKey,
         ownerDeviceId: 'android-owner',
         ownerDeviceName: 'Android',
         ownerDevicePublicKey: 'android-public',
