@@ -55,6 +55,7 @@ void main() {
       final pubspec = _read('pubspec.yaml');
       final lockfile = _read('pubspec.lock');
       final androidPackager = _read('../../scripts/package_android.sh');
+      final macosPackager = _read('../../scripts/package_macos.sh');
       final androidUpgrade = _read('../../scripts/android_upgrade_smoke.sh');
       final androidUpgradeCi = _read('../../scripts/run_android_upgrade_smoke_ci.sh');
       final macosUpgrade = _read('../../scripts/macos_package_upgrade_smoke.sh');
@@ -73,6 +74,14 @@ void main() {
       expect(workflow, contains('Run packaged Android adb install -r upgrade test'));
       expect(workflow, contains('Configure ephemeral Android signing for pull-request verification'));
       expect(workflow, contains('Run packaged macOS clean and legacy-library upgrade test'));
+      expect(workflow, contains('READARC_REQUIRE_STABLE_MACOS_SIGNING'));
+      expect(workflow, contains('MACOS_CERTIFICATE_P12_BASE64'));
+      expect(macosPackager, isNot(contains('security delete-generic-password')));
+      expect(macosPackager, contains('stable Developer ID signing identity'));
+      expect(macosPackager, contains('MACOS_SIGNING.txt'));
+      expect(macosPackager, contains('CFBundleShortVersionString'));
+      expect(androidPackager, contains('versionName='));
+      expect(_read('lib/services/library_repository.dart'), contains('usesDataProtectionKeychain: false'));
       expect(pubspec, contains('flutter_secure_storage: 10.3.0'));
       expect(lockfile, contains('flutter_secure_storage_darwin'));
       expect(lockfile, contains('version: "0.3.2"'));
@@ -84,6 +93,16 @@ void main() {
       expect(main, contains('Показать QR'));
       expect(main, contains('Введите код приглашения'));
       expect(main, contains('Введите код на подключаемом устройстве'));
+    });
+
+    test('cross-platform build identity is visible in the app', () {
+      final buildIdentity = _read('lib/build_identity.dart');
+      final main = _read('lib/app/readarc_app.dart');
+      final workflow = _read('../../.github/workflows/quality_gate.yml');
+      expect(buildIdentity, contains("defaultValue: '0.49.1'"));
+      expect(buildIdentity, contains("'READARC_BUILD_NUMBER'"));
+      expect(main, contains('Версия: \${BuildIdentity.display}'));
+      expect(workflow, contains(r'READARC_BUILD_NUMBER: ${{ github.run_number }}'));
     });
 
     test('library download paths remain guarded by relay connectivity', () {

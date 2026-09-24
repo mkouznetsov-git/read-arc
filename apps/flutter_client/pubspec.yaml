@@ -1,7 +1,7 @@
 name: readarc
 description: Local-first cross-platform reader for ReadArc.
 publish_to: 'none'
-version: 0.1.0+42
+version: 0.49.1+42
 
 environment:
   sdk: '>=3.13.0 <3.14.0'

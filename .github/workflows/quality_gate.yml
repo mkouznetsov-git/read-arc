@@ -47,7 +47,7 @@ env:
   RUST_VERSION: '1.98.0'
   CARGO_NDK_VERSION: '4.1.2'
   READARC_DEFAULT_RELAY_URL: ${{ github.event.inputs.default_relay_url || vars.READARC_DEFAULT_RELAY_URL || 'https://relay.readarc.ru' }}
-  READARC_BASE_VERSION: '0.1.0'
+  READARC_BASE_VERSION: '0.49.1'
   READARC_BUILD_NUMBER: ${{ github.run_number }}
   BUILD_DEBUG_ARTIFACTS: ${{ github.event.inputs.build_debug_artifacts || 'false' }}
 
@@ -77,7 +77,6 @@ jobs:
         run: |
           dart format apps/flutter_client/lib apps/flutter_client/test apps/flutter_client/integration_test
           git diff -- apps/flutter_client/lib apps/flutter_client/test apps/flutter_client/integration_test > test-results/dart-format.patch
-
       - name: Upload quality logs
         if: always()
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
@@ -198,7 +197,16 @@ jobs:
 
       - name: Build iOS without signing
         working-directory: apps/flutter_client
-        run: flutter build ios --release --no-codesign --dart-define="READARC_DEFAULT_RELAY_URL=${READARC_DEFAULT_RELAY_URL}"
+        run: |
+          set -euo pipefail
+          build_name="$READARC_BASE_VERSION"
+          if [[ "$GITHUB_REF_NAME" == v* ]]; then build_name="${GITHUB_REF_NAME#v}"; fi
+          flutter build ios --release --no-codesign \
+            --build-name "$build_name" \
+            --build-number "$READARC_BUILD_NUMBER" \
+            --dart-define="READARC_DEFAULT_RELAY_URL=$READARC_DEFAULT_RELAY_URL" \
+            --dart-define="READARC_BUILD_NAME=$build_name" \
+            --dart-define="READARC_BUILD_NUMBER=$READARC_BUILD_NUMBER"
 
   android-package:
     name: Verified Android packages
@@ -336,6 +344,7 @@ jobs:
     needs: [android-smoke, macos-smoke, ios-build-smoke]
     env:
       READARC_REQUIRE_NATIVE_ENGINES: 'true'
+      READARC_REQUIRE_STABLE_MACOS_SIGNING: ${{ (github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master' || startsWith(github.ref, 'refs/tags/v'))) || (github.event_name == 'workflow_dispatch' && github.event.inputs.publish_release == 'true') }}
     steps:
       - name: Checkout
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
@@ -353,8 +362,47 @@ jobs:
           toolchain: ${{ env.RUST_VERSION }}
           targets: x86_64-apple-darwin,aarch64-apple-darwin
 
+      - name: Configure stable macOS signing when available
+        env:
+          MACOS_CERTIFICATE_P12_BASE64: ${{ secrets.MACOS_CERTIFICATE_P12_BASE64 }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          MACOS_SIGNING_IDENTITY: ${{ secrets.MACOS_SIGNING_IDENTITY }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${MACOS_CERTIFICATE_P12_BASE64:-}" ]]; then
+            if [[ "$READARC_REQUIRE_STABLE_MACOS_SIGNING" == "true" ]]; then
+              echo 'ERROR: protected macOS signing certificate is required for production packaging.' >&2
+              exit 1
+            fi
+            echo 'PR/internal build: protected signing certificate unavailable; using documented ad-hoc mode.'
+            exit 0
+          fi
+          for name in MACOS_CERTIFICATE_PASSWORD MACOS_SIGNING_IDENTITY; do
+            if [[ -z "${!name:-}" ]]; then
+              echo "ERROR: incomplete macOS signing configuration: $name" >&2
+              exit 1
+            fi
+          done
+          keychain="$RUNNER_TEMP/readarc-signing.keychain-db"
+          certificate="$RUNNER_TEMP/readarc-signing.p12"
+          keychain_password="$(openssl rand -hex 24)"
+          printf '%s' "$MACOS_CERTIFICATE_P12_BASE64" | base64 --decode > "$certificate"
+          security create-keychain -p "$keychain_password" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$keychain_password" "$keychain"
+          security import "$certificate" -k "$keychain" -P "$MACOS_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$keychain_password" "$keychain"
+          security list-keychains -d user -s "$keychain" login.keychain-db
+          security find-identity -v -p codesigning "$keychain"
+          echo "READARC_MACOS_SIGNING_IDENTITY=$MACOS_SIGNING_IDENTITY" >> "$GITHUB_ENV"
+          echo "READARC_MACOS_KEYCHAIN=$keychain" >> "$GITHUB_ENV"
+
       - name: Build macOS packages
         run: bash ./scripts/package_macos.sh
+
+      - name: Remove temporary macOS signing keychain
+        if: always() && env.READARC_MACOS_KEYCHAIN != ''
+        run: security delete-keychain "$READARC_MACOS_KEYCHAIN"
 
       - name: Run packaged macOS clean and legacy-library upgrade test
         run: |
@@ -447,7 +495,7 @@ jobs:
           - Build: \`${GITHUB_RUN_NUMBER}\`
           - Workflow: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}
 
-          Android-артефакты подписаны закрытым release key из GitHub Secrets. macOS-пакеты остаются внутренними ad-hoc builds до подключения Developer ID и notarization. iOS проверяется сборкой без подписи и не публикуется как installable IPA.
+          Android-артефакты подписаны закрытым release key из GitHub Secrets. Публикуемые macOS-пакеты проходят обязательную стабильную Developer ID подпись; PR artifacts явно маркируются как ad-hoc. iOS проверяется сборкой без подписи и не публикуется как installable IPA.
           EOF
           find release-assets -type f -print | sort
 

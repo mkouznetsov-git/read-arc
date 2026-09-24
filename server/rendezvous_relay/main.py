@@ -111,6 +111,7 @@ async def start_pairing(request: Request) -> JSONResponse:
     owner_device_public_key = str(payload.get("ownerDevicePublicKey") or "").strip()
     account_encryption_key = str(payload.get("accountEncryptionKey") or "").strip()
     relay_url = str(payload.get("relayUrl") or "").strip()
+    request_id = str(payload.get("requestId") or "").strip()[:128]
     try:
         expires_seconds = int(payload.get("expiresSeconds") or PAIRING_TTL_SECONDS)
     except (TypeError, ValueError):
@@ -123,9 +124,40 @@ async def start_pairing(request: Request) -> JSONResponse:
             status_code=400,
         )
 
-    code = await _generate_pairing_code()
-    expires_at = time.time() + expires_seconds
+    now = time.time()
     async with _lock:
+        expired = [code for code, record in _pairing_codes.items() if record.get("expiresAt", 0) < now]
+        for expired_code in expired:
+            _pairing_codes.pop(expired_code, None)
+
+        # A mobile network can deliver the request but lose the response. A
+        # retry with the same non-secret request id must return the same invite
+        # instead of leaving an unknown live code and partial pairing state.
+        if request_id:
+            for existing_code, record in _pairing_codes.items():
+                if (
+                    record.get("requestId") == request_id
+                    and record.get("accountId") == account_id
+                    and record.get("ownerDeviceId") == owner_device_id
+                ):
+                    return JSONResponse({
+                        "ok": True,
+                        "code": existing_code,
+                        "expiresAt": record["expiresAt"],
+                        "expiresInSeconds": max(0, int(record["expiresAt"] - now)),
+                        "relayUrl": record["relayUrl"],
+                    })
+
+        code = ""
+        for _ in range(20):
+            candidate = f"{secrets.randbelow(1_000_000):06d}"
+            if candidate not in _pairing_codes:
+                code = candidate
+                break
+        if not code:
+            return JSONResponse({"ok": False, "message": "Pairing capacity is temporarily unavailable"}, status_code=503)
+
+        expires_at = now + expires_seconds
         _pairing_codes[code] = {
             "accountId": account_id,
             "ownerDeviceId": owner_device_id,
@@ -133,9 +165,10 @@ async def start_pairing(request: Request) -> JSONResponse:
             "ownerDevicePublicKey": owner_device_public_key,
             "accountEncryptionKey": account_encryption_key,
             "relayUrl": relay_url,
-            "createdAt": time.time(),
+            "createdAt": now,
             "expiresAt": expires_at,
             "claimedBy": None,
+            "requestId": request_id,
         }
 
     return JSONResponse({
@@ -374,17 +407,6 @@ async def _ack_offline_queue(account_id: str, device_id: str, decoded: dict) -> 
     cursor_int = max(0, int(cursor))
     async with _lock:
         _relay_store.acknowledge(account_id, device_id, cursor_int)
-
-
-async def _generate_pairing_code() -> str:
-    await _cleanup_expired_pairing_codes()
-    for _ in range(20):
-        raw = secrets.randbelow(1_000_000)
-        code = f"{raw:06d}"
-        async with _lock:
-            if code not in _pairing_codes:
-                return code
-    raise RuntimeError("Could not generate unique pairing code")
 
 
 def _normalize_pairing_code(code: str) -> str:

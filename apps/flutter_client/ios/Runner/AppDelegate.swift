@@ -78,6 +78,10 @@ private final class IOSLibraryStoragePlugin: NSObject, UIDocumentPickerDelegate 
         case "containsFile":
           let source = URL(fileURLWithPath: arguments["sourcePath"] as! String).standardizedFileURL.path
           value = source.hasPrefix(root.standardizedFileURL.path + "/")
+        case "readServiceFile": value = try self.readServiceFile(root, arguments)
+        case "listServiceFiles": value = try self.listServiceFiles(root, arguments)
+        case "publishServiceFile":
+          try self.publishServiceFile(root, arguments); value = nil
         default: throw IOSLibraryError.unsupported
         }
         DispatchQueue.main.async { result(value) }
@@ -252,6 +256,116 @@ private final class IOSLibraryStoragePlugin: NSObject, UIDocumentPickerDelegate 
       throw error
     }
   }
+  private func serviceURL(_ root: URL, _ arguments: [String: Any]) throws -> URL {
+    let url = try entryURL(root, arguments)
+    let relative = arguments["relativeLocation"] as? String ?? ""
+    guard relative == ".readarc" || relative.hasPrefix(".readarc/") else {
+      throw IOSLibraryError.invalidArguments
+    }
+    return url
+  }
+
+  private func readServiceFile(_ root: URL, _ arguments: [String: Any]) throws -> FlutterStandardTypedData? {
+    let source = try serviceURL(root, arguments)
+    guard FileManager.default.fileExists(atPath: source.path) else { return nil }
+    var coordinatorError: NSError?
+    var readError: Error?
+    var data: Data?
+    NSFileCoordinator().coordinate(readingItemAt: source, options: [], error: &coordinatorError) { coordinated in
+      do { data = try Data(contentsOf: coordinated) } catch { readError = error }
+    }
+    if let error = coordinatorError { throw error }
+    if let error = readError { throw error }
+    return data.map(FlutterStandardTypedData.init(bytes:))
+  }
+
+  private func listServiceFiles(_ root: URL, _ arguments: [String: Any]) throws -> [String] {
+    let directory = try serviceURL(root, arguments)
+    guard FileManager.default.fileExists(atPath: directory.path) else { return [] }
+    let keys: [URLResourceKey] = [.isRegularFileKey, .isSymbolicLinkKey]
+    guard let enumerator = FileManager.default.enumerator(
+      at: directory,
+      includingPropertiesForKeys: keys,
+      options: [.skipsPackageDescendants])
+    else { return [] }
+    let prefixLength = root.standardizedFileURL.path.count + 1
+    var result: [String] = []
+    for case let url as URL in enumerator {
+      let values = try url.resourceValues(forKeys: Set(keys))
+      guard values.isRegularFile == true, values.isSymbolicLink != true else { continue }
+      let standardized = url.standardizedFileURL.path
+      guard standardized.hasPrefix(root.standardizedFileURL.path + "/") else {
+        throw IOSLibraryError.invalidArguments
+      }
+      result.append(String(standardized.dropFirst(prefixLength)))
+    }
+    return result.sorted()
+  }
+
+  private func publishServiceFile(_ root: URL, _ arguments: [String: Any]) throws {
+    guard FileManager.default.fileExists(atPath: root.path) else {
+      throw IOSLibraryError.missing
+    }
+    let target = try serviceURL(root, arguments)
+    guard let typed = arguments["bytes"] as? FlutterStandardTypedData else {
+      throw IOSLibraryError.invalidArguments
+    }
+    let preservePrevious = arguments["preservePrevious"] as? Bool ?? true
+    let data = typed.data
+    let parent = target.deletingLastPathComponent()
+    try FileManager.default.createDirectory(
+      at: parent,
+      withIntermediateDirectories: true)
+    let staged = parent.appendingPathComponent(
+      "." + target.lastPathComponent + ".readarc-staging-" + UUID().uuidString)
+    let previous = parent.appendingPathComponent("previous")
+    var movedCurrent = false
+    var published = false
+    do {
+      try data.write(to: staged, options: [.withoutOverwriting])
+      let handle = try FileHandle(forWritingTo: staged)
+      try handle.synchronize()
+      try handle.close()
+      guard try Data(contentsOf: staged) == data else {
+        throw IOSLibraryError.verificationFailed
+      }
+      var coordinatorError: NSError?
+      var publishError: Error?
+      NSFileCoordinator().coordinate(
+        writingItemAt: parent,
+        options: .forMerging,
+        error: &coordinatorError
+      ) { _ in
+        do {
+          if preservePrevious && FileManager.default.fileExists(atPath: previous.path) {
+            try FileManager.default.removeItem(at: previous)
+          }
+          if preservePrevious && FileManager.default.fileExists(atPath: target.path) {
+            try FileManager.default.moveItem(at: target, to: previous)
+            movedCurrent = true
+          } else if !preservePrevious && FileManager.default.fileExists(atPath: target.path) {
+            throw IOSLibraryError.destinationCollision
+          }
+          try FileManager.default.moveItem(at: staged, to: target)
+          published = true
+        } catch {
+          publishError = error
+        }
+      }
+      if let error = coordinatorError { throw error }
+      if let error = publishError { throw error }
+      guard try Data(contentsOf: target) == data else {
+        throw IOSLibraryError.verificationFailed
+      }
+    } catch {
+      if published { try? FileManager.default.removeItem(at: target) }
+      if movedCurrent { try? FileManager.default.moveItem(at: previous, to: target) }
+      try? FileManager.default.removeItem(at: staged)
+      throw error
+    }
+  }
+
+
 }
 
 private enum IOSLibraryError: Error {

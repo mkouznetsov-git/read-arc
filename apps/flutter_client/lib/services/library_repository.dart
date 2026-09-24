@@ -117,6 +117,46 @@ class LibraryRepository {
 
   Future<LibraryManifest> replace(LibraryManifest replacement) => mutate((_) => replacement);
 
+  /// Commits authenticated account recovery while preserving the installation
+  /// identity that was generated in the new sandbox. The ordinary destructive
+  /// replacement guard intentionally remains strict for every other caller.
+  Future<LibraryManifest> replaceAfterAuthenticatedRecovery(LibraryManifest replacement) => _serialized(() async {
+    final current = await _readOrCreate();
+    if (replacement.deviceId != current.deviceId ||
+        replacement.deviceSigningPublicKey != current.deviceSigningPublicKey ||
+        replacement.deviceSigningPrivateKey != current.deviceSigningPrivateKey) {
+      throw StateError('Recovery attempted to replace installation device identity');
+    }
+    if (replacement.accountId.trim().isEmpty || replacement.accountEncryptionKey.trim().isEmpty) {
+      throw StateError('Recovered account identity is incomplete');
+    }
+    final updated = _normalize(replacement);
+    await _writeVerified(updated, previous: current);
+    return updated;
+  });
+
+  /// Commits an account transition authorized by a one-time pairing claim.
+  ///
+  /// Account-scoped metadata from the installation's previous account must not
+  /// cross this boundary. In particular, carrying old Lamport revisions or
+  /// deletion tombstones into the claimed account can hide that account's
+  /// physical books as soon as the first snapshot is exchanged. Device identity
+  /// is installation-scoped, so it is deliberately preserved and verified.
+  Future<LibraryManifest> replaceAfterAuthenticatedPairing(LibraryManifest replacement) => _serialized(() async {
+    final current = await _readOrCreate();
+    if (replacement.deviceId != current.deviceId ||
+        replacement.deviceSigningPublicKey != current.deviceSigningPublicKey ||
+        replacement.deviceSigningPrivateKey != current.deviceSigningPrivateKey) {
+      throw StateError('Pairing attempted to replace installation device identity');
+    }
+    if (replacement.accountId.trim().isEmpty || replacement.accountEncryptionKey.trim().isEmpty) {
+      throw StateError('Paired account identity is incomplete');
+    }
+    final updated = _normalize(replacement);
+    await _writeVerified(updated, previous: current);
+    return updated;
+  });
+
   Future<File> get manifestFile async => File(p.join((await _appDirectory()).path, 'manifest.json'));
 
   Future<LibraryManifest> _readOrCreate() async {

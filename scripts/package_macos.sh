@@ -5,10 +5,14 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 APP_DIR="$ROOT_DIR/apps/flutter_client"
 DIST_DIR="$ROOT_DIR/dist/macos"
 APP_NAME="ReadArc"
-BASE_VERSION="${READARC_BASE_VERSION:-0.1.0}"
+BASE_VERSION="${READARC_BASE_VERSION:-0.49.1}"
 BUILD_NUMBER="${READARC_BUILD_NUMBER:-${GITHUB_RUN_NUMBER:-}}"
 if [[ -z "$BUILD_NUMBER" ]]; then
   BUILD_NUMBER="$(git -C "$ROOT_DIR" rev-list --count HEAD 2>/dev/null || echo 23)"
+fi
+if [[ ! "$BUILD_NUMBER" =~ ^[0-9]+$ || "$BUILD_NUMBER" == "0" ]]; then
+  echo "ERROR: macOS CFBundleVersion must be a positive integer, got: $BUILD_NUMBER" >&2
+  exit 1
 fi
 if [[ "${GITHUB_REF_NAME:-}" == v* ]]; then
   BUILD_NAME="${READARC_BUILD_NAME:-${GITHUB_REF_NAME#v}}"
@@ -19,8 +23,15 @@ else
 fi
 BUILD_DEBUG_ARTIFACTS="${BUILD_DEBUG_ARTIFACTS:-false}"
 REQUIRE_NATIVE_ENGINES="${READARC_REQUIRE_NATIVE_ENGINES:-false}"
+SIGNING_IDENTITY="${READARC_MACOS_SIGNING_IDENTITY:--}"
+REQUIRE_STABLE_SIGNING="${READARC_REQUIRE_STABLE_MACOS_SIGNING:-false}"
 DMG_NAME="ReadArc-${VERSION}-macos-release.dmg"
 PKG_NAME="ReadArc-${VERSION}-macos-release.pkg"
+
+if [[ "$REQUIRE_STABLE_SIGNING" == "true" && "$SIGNING_IDENTITY" == "-" ]]; then
+  echo "ERROR: production macOS packages require a stable Developer ID signing identity." >&2
+  exit 1
+fi
 
 export READARC_PLATFORMS="macos"
 "$ROOT_DIR/scripts/prepare_flutter_platforms.sh"
@@ -43,6 +54,8 @@ build_with_optional_define() {
   if [[ -n "$relay_define" ]]; then
     args+=(--dart-define="READARC_DEFAULT_RELAY_URL=$relay_define")
   fi
+  args+=(--dart-define="READARC_BUILD_NAME=$BUILD_NAME")
+  args+=(--dart-define="READARC_BUILD_NUMBER=$BUILD_NUMBER")
   flutter "${args[@]}"
 }
 
@@ -63,6 +76,19 @@ trap 'rm -rf "$STAGE_ROOT"' EXIT
 STAGED_APP="$STAGE_ROOT/$APP_NAME.app"
 cp -R "$APP_PATH" "$STAGED_APP"
 
+INFO_PLIST="$STAGED_APP/Contents/Info.plist"
+ACTUAL_BUILD_NAME="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$INFO_PLIST")"
+ACTUAL_BUILD_NUMBER="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$INFO_PLIST")"
+if [[ "$ACTUAL_BUILD_NAME" != "$BUILD_NAME" || "$ACTUAL_BUILD_NUMBER" != "$BUILD_NUMBER" ]]; then
+  echo "ERROR: packaged macOS version mismatch: expected=$BUILD_NAME ($BUILD_NUMBER) actual=$ACTUAL_BUILD_NAME ($ACTUAL_BUILD_NUMBER)" >&2
+  exit 1
+fi
+{
+  echo "CFBundleShortVersionString=$ACTUAL_BUILD_NAME"
+  echo "CFBundleVersion=$ACTUAL_BUILD_NUMBER"
+  echo "displayBuild=$BUILD_NAME ($BUILD_NUMBER)"
+} > "$DIST_DIR/MACOS_BUILD_METADATA.txt"
+
 DJVU_DYLIB="$ROOT_DIR/native/readarc_engines/dist/macos/libreadarc_djvu_engine.dylib"
 if [[ -f "$DJVU_DYLIB" ]]; then
   mkdir -p "$STAGED_APP/Contents/Frameworks"
@@ -71,21 +97,37 @@ fi
 
 # The native DJVU dylib is copied into the bundle after Flutter/Xcode finishes.
 # Without re-signing the modified bundle, Gatekeeper can report that ReadArc.app
-# is "damaged". Internal snapshot builds use ad-hoc signing; public builds
-# should replace this with Developer ID signing + notarization.
+# is "damaged". Internal snapshot builds use explicitly documented ad-hoc
+# signing; production packaging fails closed unless a stable Developer ID is
+# provided by protected CI configuration.
 if command -v codesign >/dev/null 2>&1; then
   xattr -cr "$STAGED_APP" 2>/dev/null || true
-  if [[ -f "$STAGED_APP/Contents/Frameworks/libreadarc_djvu_engine.dylib" ]]; then
-    codesign --force --sign - "$STAGED_APP/Contents/Frameworks/libreadarc_djvu_engine.dylib"
+  codesign_args=(--force --sign "$SIGNING_IDENTITY")
+  signing_mode="ad-hoc"
+  if [[ "$SIGNING_IDENTITY" != "-" ]]; then
+    codesign_args+=(--options runtime --timestamp)
+    signing_mode="stable-developer-id"
+  else
+    echo "WARNING: PR/internal macOS artifact is ad-hoc signed. Its code identity changes between builds," >&2
+    echo "so an existing legacy Keychain ACL can ask for permission again. Secrets remain encrypted." >&2
   fi
-  # Re-sign only the modified outer bundle and explicitly restore its release
-  # entitlements. A plain `codesign --deep --sign -` discards every
-  # Xcode-produced entitlement. ReadArc intentionally uses the legacy encrypted
-  # macOS Keychain until Developer ID signing is available, because the Data
-  # Protection Keychain entitlement requires a provisioning profile.
+  if [[ "$SIGNING_IDENTITY" != "-" ]]; then
+    # Flutter's release output may contain ad-hoc-signed frameworks. A stable
+    # outer signature is not sufficient: sign every nested framework with the
+    # same Developer ID before sealing the application bundle.
+    while IFS= read -r framework; do
+      codesign "${codesign_args[@]}" "$framework"
+    done < <(find "$STAGED_APP/Contents/Frameworks" -type d -name '*.framework' -print 2>/dev/null | sort)
+  fi
+  if [[ -f "$STAGED_APP/Contents/Frameworks/libreadarc_djvu_engine.dylib" ]]; then
+    codesign "${codesign_args[@]}" "$STAGED_APP/Contents/Frameworks/libreadarc_djvu_engine.dylib"
+  fi
+  # Re-sign the modified outer bundle and explicitly restore its release
+  # entitlements. A plain `codesign --deep` can discard Xcode-produced
+  # entitlements. ReadArc intentionally uses the legacy encrypted macOS
+  # Keychain because PR artifacts have no provisioning profile.
   codesign \
-    --force \
-    --sign - \
+    "${codesign_args[@]}" \
     --entitlements "$APP_DIR/macos/Runner/Release.entitlements" \
     "$STAGED_APP"
   signed_entitlements="$(codesign -d --entitlements :- "$STAGED_APP" 2>/dev/null)"
@@ -98,10 +140,18 @@ if command -v codesign >/dev/null 2>&1; then
     exit 1
   fi
   if grep -q '<key>keychain-access-groups</key>' <<< "$signed_entitlements"; then
-    echo "ERROR: ad-hoc ReadArc.app unexpectedly requires a Keychain Sharing provisioning profile." >&2
+    echo "ERROR: packaged ReadArc.app unexpectedly changes its Keychain access group." >&2
     exit 1
   fi
   codesign --verify --deep --strict "$STAGED_APP"
+  {
+    echo "mode=$signing_mode"
+    echo "identity=$SIGNING_IDENTITY"
+    echo "bundleIdentifier=com.readarc.readarc"
+    echo "secureStorage=legacy-encrypted-keychain"
+    echo "usesDataProtectionKeychain=false"
+    codesign -dr - "$STAGED_APP" 2>&1 || true
+  } > "$DIST_DIR/MACOS_SIGNING.txt"
 fi
 
 # Plain release .app zip, useful for quick testing.

@@ -4,6 +4,18 @@ import 'dart:io';
 import '../../models/sync_settings.dart';
 import 'connection_manager.dart';
 
+class PairingHttpException implements IOException {
+  PairingHttpException({required this.statusCode, required this.message});
+
+  final int statusCode;
+  final String message;
+
+  bool get isTransient => statusCode == 408 || statusCode == 429 || statusCode >= 500;
+
+  @override
+  String toString() => 'PairingHttpException($statusCode): $message';
+}
+
 /// Relay-side pairing transport. Account mutation remains in StorageService.
 class PairingService {
   PairingService(this._connections);
@@ -30,7 +42,10 @@ class PairingService {
       if (decoded is! Map) throw StateError('Relay вернул не JSON-объект');
       final result = Map<String, dynamic>.from(decoded);
       if (response.statusCode < 200 || response.statusCode >= 300) {
-        throw StateError(result['message']?.toString() ?? 'HTTP ${response.statusCode}');
+        throw PairingHttpException(
+          statusCode: response.statusCode,
+          message: result['message']?.toString() ?? 'HTTP ${response.statusCode}',
+        );
       }
       return result;
     } finally {
