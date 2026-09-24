@@ -92,6 +92,29 @@ void main() {
     expect(merged.books.single.availableOnDeviceIds, ['b']);
   });
 
+  test('absence from a remote snapshot never invents a tombstone for a local-only book', () {
+    final localBook = BookRecord(
+      id: 'local-only',
+      title: 'Local only',
+      fileName: 'local.epub',
+      format: 'epub',
+      sizeBytes: 10,
+      contentSha256: 'local-only',
+      relativeLocation: 'local.epub',
+      sourceAvailability: 'available',
+      availableOnDeviceIds: const ['local-device'],
+    );
+
+    final merged = mergeManifests(
+      LibraryManifest(accountId: 'acc', deviceId: 'local-device', books: [localBook]),
+      LibraryManifest(accountId: 'acc', deviceId: 'remote-device'),
+    );
+
+    expect(merged.visibleBooks.single.id, 'local-only');
+    expect(merged.visibleBooks.single.isDeleted, isFalse);
+    expect(merged.visibleBooks.single.relativeLocation, 'local.epub');
+  });
+
   test('merge bookmarks keeps both devices changes', () {
     final localBookmark = BookmarkRecord(
       id: 'bookmark-a',

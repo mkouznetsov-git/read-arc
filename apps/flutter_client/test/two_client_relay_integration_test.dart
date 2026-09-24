@@ -7,6 +7,8 @@ import 'package:crypto/crypto.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:readarc/models/book.dart';
 import 'package:readarc/models/manifest.dart';
+import 'package:readarc/models/sync_revision.dart';
+import 'package:readarc/models/sync_settings.dart';
 import 'package:readarc/services/library_repository.dart';
 import 'package:readarc/services/library_storage.dart';
 import 'package:readarc/services/storage_service.dart';
@@ -14,6 +16,168 @@ import 'package:readarc/services/sync/direct_transfer_server.dart';
 import 'package:readarc/services/sync/sync_service.dart';
 
 void main() {
+  test('pairing isolates the old account, preserves physical books and transfers from a fresh device id', () async {
+    final root = Directory.current.path.endsWith('apps/flutter_client')
+        ? Directory.current.parent.parent.path
+        : Directory.current.path;
+    final relayDirectory = '$root/server/rendezvous_relay';
+    final relayData = await Directory.systemTemp.createTemp('readarc-relay-pairing-');
+    final androidData = await Directory.systemTemp.createTemp('readarc-pairing-android-data-');
+    final macData = await Directory.systemTemp.createTemp('readarc-pairing-mac-data-');
+    final androidLibrary = await Directory.systemTemp.createTemp('readarc-pairing-android-library-');
+    final macLibrary = await Directory.systemTemp.createTemp('readarc-pairing-mac-library-');
+    final portProbe = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
+    final port = portProbe.port;
+    await portProbe.close();
+    final process = await Process.start(
+      'python3',
+      ['-m', 'uvicorn', 'main:app', '--host', '127.0.0.1', '--port', '$port', '--log-level', 'warning'],
+      workingDirectory: relayDirectory,
+      environment: {...Platform.environment, 'READARC_RELAY_DATA_DIR': relayData.path},
+    );
+    final diagnostics = StringBuffer();
+    final stdoutSubscription = process.stdout.transform(utf8.decoder).listen(diagnostics.write);
+    final stderrSubscription = process.stderr.transform(utf8.decoder).listen(diagnostics.write);
+
+    final bytes = utf8.encode('ReadArc pairing transfer regression ${List.filled(4096, 'x').join()}');
+    final hash = sha256.convert(bytes).toString();
+    final sourceFile = File('${androidLibrary.path}/Shelf/source.txt');
+    await sourceFile.parent.create(recursive: true);
+    await sourceFile.writeAsBytes(bytes, flush: true);
+    final activeBook = BookRecord(
+      id: hash,
+      title: 'Physical Android book',
+      fileName: 'source.txt',
+      format: 'txt',
+      sizeBytes: bytes.length,
+      contentSha256: hash,
+      relativeLocation: 'Shelf/source.txt',
+      sourceAvailability: 'available',
+      progressPercent: 5,
+      currentLocator: 'txt:5',
+      progressVersion: 1,
+      updatedByDeviceId: 'android-reinstalled',
+      availableOnDeviceIds: const ['android-reinstalled'],
+      metadataRevision: const SyncRevision(counter: 7, deviceId: 'android-reinstalled'),
+      progressRevision: const SyncRevision(counter: 8, deviceId: 'android-reinstalled'),
+    );
+    final staleOldAccountTombstone = activeBook.copyWith(
+      clearRelativeLocation: true,
+      sourceAvailability: 'unavailable',
+      deletedAt: DateTime.utc(2035),
+      availableOnDeviceIds: const [],
+      metadataRevision: const SyncRevision(counter: 500, deviceId: 'old-mac'),
+    );
+    final key = base64UrlEncode(Uint8List.fromList(List<int>.generate(32, (index) => index + 1))).replaceAll('=', '');
+    final storageAndroid = _storage(
+      androidData,
+      _MemorySecretStore(),
+      LibraryManifest(
+        accountId: 'recovered-account',
+        accountEncryptionKey: key,
+        deviceId: 'android-reinstalled',
+        deviceName: 'Android after reinstall',
+        deviceSigningPublicKey: 'public-android-reinstalled',
+        deviceSigningPrivateKey: 'private-android-reinstalled',
+        books: [activeBook],
+        trustedDevices: [
+          TrustedDeviceRecord(
+            deviceId: 'android-reinstalled',
+            name: 'Android after reinstall',
+            role: 'owner',
+            publicKey: 'public-android-reinstalled',
+          ),
+        ],
+        logicalClock: 8,
+      ),
+      library: androidLibrary,
+    );
+    final storageMac = _storage(
+      macData,
+      _MemorySecretStore(),
+      LibraryManifest(
+        accountId: 'unrelated-old-account',
+        accountEncryptionKey: base64UrlEncode(Uint8List(32)).replaceAll('=', ''),
+        deviceId: 'mac-fresh-install',
+        deviceName: 'Mac',
+        deviceSigningPublicKey: 'public-mac-fresh-install',
+        deviceSigningPrivateKey: 'private-mac-fresh-install',
+        books: [staleOldAccountTombstone],
+        trustedDevices: [
+          TrustedDeviceRecord(deviceId: 'old-mac', name: 'Old Mac owner', role: 'owner', publicKey: 'public-old-mac'),
+        ],
+        logicalClock: 500,
+        appliedOperationIds: const ['old-account-operation'],
+      ),
+      library: macLibrary,
+    );
+    final relayUrl = 'http://127.0.0.1:$port';
+    final syncAndroid = SyncService(
+      storageAndroid,
+      directTransferServer: DirectTransferServer(enabled: false),
+      pairingRelayUrlOverride: relayUrl,
+    );
+    final syncMac = SyncService(
+      storageMac,
+      directTransferServer: DirectTransferServer(enabled: false),
+      pairingRelayUrlOverride: relayUrl,
+    );
+
+    try {
+      await _waitForRelay(port, process, diagnostics);
+      final invites = await Future.wait([
+        syncAndroid.createPairingInvite(settings: const SyncSettings()),
+        syncAndroid.createPairingInvite(settings: const SyncSettings()),
+      ]);
+      expect(invites[0].code, invites[1].code, reason: 'concurrent taps must share one pairing transaction');
+      expect(syncAndroid.state.value.connected, isTrue, reason: 'the source must be relay-present before code display');
+
+      await syncMac.claimPairingInvite(input: invites.first.code, fallbackSettings: const SyncSettings());
+      expect((await storageMac.loadManifest()).deviceId, 'mac-fresh-install');
+
+      await _waitFor(() async {
+        final android = await storageAndroid.loadManifest();
+        final mac = await storageMac.loadManifest();
+        return android.visibleBooks.length == 1 &&
+            mac.visibleBooks.length == 1 &&
+            android.activeTrustedDevices.any((device) => device.deviceId == 'mac-fresh-install') &&
+            mac.activeTrustedDevices.any((device) => device.deviceId == 'android-reinstalled');
+      }, timeout: const Duration(seconds: 10));
+
+      final pairedMac = await storageMac.loadManifest();
+      expect(pairedMac.accountId, 'recovered-account');
+      expect(pairedMac.logicalClock, lessThan(500));
+      expect(pairedMac.appliedOperationIds, isNot(contains('old-account-operation')));
+      expect(pairedMac.visibleBooks.single.isDeleted, isFalse);
+      expect(pairedMac.visibleBooks.single.progressPercent, 5);
+      expect((await storageAndroid.loadManifest()).visibleBooks.single.isDeleted, isFalse);
+
+      expect(await syncMac.requestBookFile(pairedMac.visibleBooks.single), isTrue);
+      await _waitFor(
+        () async => (await storageMac.loadManifest()).visibleBooks.single.isDownloaded,
+        timeout: const Duration(seconds: 15),
+      );
+      final downloaded = (await storageMac.loadManifest()).visibleBooks.single;
+      expect(await (await storageMac.materializeBook(downloaded)).readAsBytes(), bytes);
+    } finally {
+      await syncAndroid.dispose();
+      await syncMac.dispose();
+      process.kill(ProcessSignal.sigterm);
+      await process.exitCode.timeout(
+        const Duration(seconds: 5),
+        onTimeout: () {
+          process.kill(ProcessSignal.sigkill);
+          return -1;
+        },
+      );
+      await stdoutSubscription.cancel();
+      await stderrSubscription.cancel();
+      for (final directory in [relayData, androidData, macData, androidLibrary, macLibrary]) {
+        if (await directory.exists()) await directory.delete(recursive: true);
+      }
+    }
+  }, timeout: const Timeout(Duration(seconds: 40)));
+
   test('two clients exchange progress through a real relay process', () async {
     final root = Directory.current.path.endsWith('apps/flutter_client')
         ? Directory.current.parent.parent.path

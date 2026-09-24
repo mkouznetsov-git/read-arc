@@ -16,6 +16,7 @@ import 'package:pdfx/pdfx.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 import 'package:url_launcher/url_launcher.dart';
 
+import '../build_identity.dart';
 import '../models/book.dart';
 import '../models/manifest.dart';
 import '../models/sync_settings.dart';
@@ -8709,6 +8710,8 @@ class _SyncScreenState extends State<SyncScreen> {
                       ],
                     ),
                     const SizedBox(height: 12),
+                    const Text('Версия: ${BuildIdentity.display}'),
+                    const SizedBox(height: 6),
                     Text('Статус подключения: ${syncState.statusText}'),
                     if (manifest.isCurrentDeviceRevoked) ...[
                       const SizedBox(height: 10),

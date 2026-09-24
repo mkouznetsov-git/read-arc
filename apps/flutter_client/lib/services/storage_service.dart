@@ -652,13 +652,22 @@ class StorageService {
   Future<LibraryManifest> recoverPortableStateAfterPairing() async {
     final root = await configuredLibraryRoot();
     final local = await loadManifest();
-    if (root == null) return local;
-    final inspection = await _portableState.inspect(root, currentAccountId: local.accountId);
-    if (inspection.disposition != PortableLibraryDisposition.currentAccount) {
+    if (root == null) {
+      _portableWritesSuppressed = false;
       return local;
     }
-    final merged = await _portableState.mergeSnapshots(root: root, local: local);
-    await repository.replace(merged);
+    final inspection = await _portableState.inspect(root, currentAccountId: local.accountId);
+    if (inspection.disposition == PortableLibraryDisposition.currentAccount) {
+      final merged = await _portableState.mergeSnapshots(root: root, local: local);
+      await repository.replace(merged);
+    } else if (inspection.disposition != PortableLibraryDisposition.empty) {
+      // The selected root belongs to another account (or is damaged/future
+      // format). Pairing authorizes the claimed account, not destruction of the
+      // previous account's portable generations. Keep writes suppressed while
+      // still indexing physical source files for the claimed account.
+      await refreshLibrary(afterPending: true);
+      return loadManifest();
+    }
     await refreshLibrary(afterPending: true);
     final reconciled = await loadManifest();
     _portableWritesSuppressed = false;
@@ -764,16 +773,53 @@ class StorageService {
     required String ownerDeviceName,
     String ownerDevicePublicKey = '',
   }) async {
-    await mutateManifest(
-      (current) => current.copyWith(
-        accountId: accountId,
-        accountEncryptionKey: accountEncryptionKey.trim().isEmpty
-            ? current.accountEncryptionKey
-            : accountEncryptionKey.trim(),
-      ),
-    );
+    final current = await loadManifest();
+    final normalizedAccountId = accountId.trim();
+    final normalizedAccountKey = accountEncryptionKey.trim();
+    final normalizedOwnerDeviceId = ownerDeviceId.trim();
+    if (normalizedAccountId.isEmpty || normalizedAccountKey.isEmpty || normalizedOwnerDeviceId.isEmpty) {
+      throw ArgumentError('Pairing account identity is incomplete');
+    }
+    if (current.accountId != normalizedAccountId) {
+      // Pairing is an authenticated account boundary. Preserve only the
+      // installation identity; books, trust records, Lamport clock and applied
+      // operation ids belong to the previous account and must not leak across.
+      _portableSnapshotDebounce?.cancel();
+      _portableSnapshotDebounce = null;
+      _portableWritesSuppressed = await configuredLibraryRoot() != null;
+      final owner = TrustedDeviceRecord(
+        deviceId: normalizedOwnerDeviceId,
+        name: ownerDeviceName.trim().isEmpty ? 'Устройство' : ownerDeviceName.trim(),
+        role: 'owner',
+        publicKey: ownerDevicePublicKey.trim(),
+        keyFingerprint: _fingerprint(ownerDevicePublicKey.trim()),
+      );
+      final self = TrustedDeviceRecord(
+        deviceId: current.deviceId,
+        name: current.deviceName,
+        role: 'device',
+        publicKey: current.deviceSigningPublicKey,
+        keyFingerprint: _fingerprint(current.deviceSigningPublicKey),
+      );
+      await repository.replaceAfterAuthenticatedPairing(
+        current.copyWith(
+          accountId: normalizedAccountId,
+          accountEncryptionKey: normalizedAccountKey,
+          books: const <BookRecord>[],
+          trustedDevices: normalizedOwnerDeviceId == current.deviceId
+              ? <TrustedDeviceRecord>[self.copyWith(role: 'owner')]
+              : <TrustedDeviceRecord>[owner, self],
+          logicalClock: 0,
+          appliedOperationIds: const <String>[],
+        ),
+      );
+      await refreshLibrary(afterPending: true);
+      return loadManifest();
+    }
+
+    await mutateManifest((manifest) => manifest.copyWith(accountEncryptionKey: normalizedAccountKey));
     final withOwner = await trustDevice(
-      deviceId: ownerDeviceId,
+      deviceId: normalizedOwnerDeviceId,
       name: ownerDeviceName,
       role: 'owner',
       publicKey: ownerDevicePublicKey,

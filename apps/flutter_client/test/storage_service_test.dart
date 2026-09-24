@@ -7,6 +7,8 @@ import 'package:crypto/crypto.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:path/path.dart' as p;
 import 'package:readarc/models/book.dart';
+import 'package:readarc/models/manifest.dart';
+import 'package:readarc/models/sync_revision.dart';
 import 'package:readarc/services/library_repository.dart';
 import 'package:readarc/services/library_storage.dart';
 import 'package:readarc/services/book_import_service.dart';
@@ -120,6 +122,78 @@ void main() {
     expect(second.relativeLocation, 'existing (2).epub');
     expect(await library.list().where((entity) => entity is File).length, 2);
   });
+
+  test(
+    'authenticated pairing drops old-account tombstones but preserves installation identity and physical files',
+    () async {
+      final application = await Directory.systemTemp.createTemp('readarc-pairing-boundary-app-');
+      final library = await Directory.systemTemp.createTemp('readarc-pairing-boundary-root-');
+      addTearDown(() async {
+        for (final directory in [application, library]) {
+          if (await directory.exists()) await directory.delete(recursive: true);
+        }
+      });
+      final bytes = utf8.encode('physically present after pairing');
+      final bookId = sha256.convert(bytes).toString();
+      await File(p.join(library.path, 'physical.epub')).writeAsBytes(bytes, flush: true);
+      final storage = StorageService(
+        appDirectory: () async => application,
+        secretStore: _MemorySecretStore(),
+        libraryStorageProvider: LocalDirectoryLibraryStorageProvider(),
+      );
+      await storage.configureLibraryRoot(
+        LibraryRoot(kind: LibraryRootKind.desktopPath, locator: library.path, displayName: 'Library'),
+        bootstrapPortableState: false,
+      );
+      final installation = await storage.loadManifest();
+      await storage.mutateManifest(
+        (current) => current.copyWith(
+          accountId: 'old-account',
+          accountEncryptionKey: 'old-key',
+          logicalClock: 500,
+          appliedOperationIds: const ['old-account-operation'],
+          trustedDevices: [
+            TrustedDeviceRecord(deviceId: 'old-owner', name: 'Old owner', role: 'owner', publicKey: 'old-public'),
+          ],
+          books: [
+            BookRecord(
+              id: bookId,
+              title: 'Stale deletion',
+              fileName: 'physical.epub',
+              format: 'epub',
+              sizeBytes: bytes.length,
+              contentSha256: bookId,
+              deletedAt: DateTime.utc(2035),
+              metadataRevision: const SyncRevision(counter: 500, deviceId: 'old-owner'),
+            ),
+          ],
+        ),
+      );
+
+      await storage.replaceAccountFromPairing(
+        accountId: 'paired-account',
+        accountEncryptionKey: 'paired-key',
+        ownerDeviceId: 'android-owner',
+        ownerDeviceName: 'Android',
+        ownerDevicePublicKey: 'android-public',
+      );
+      final paired = await storage.recoverPortableStateAfterPairing();
+
+      expect(paired.accountId, 'paired-account');
+      expect(paired.deviceId, installation.deviceId);
+      expect(paired.deviceSigningPrivateKey, installation.deviceSigningPrivateKey);
+      expect(paired.appliedOperationIds, isNot(contains('old-account-operation')));
+      expect(paired.logicalClock, lessThan(500));
+      expect(
+        paired.trustedDevices.map((device) => device.deviceId),
+        containsAll(['android-owner', installation.deviceId]),
+      );
+      expect(paired.trustedDevices.map((device) => device.deviceId), isNot(contains('old-owner')));
+      expect(paired.visibleBooks.single.id, bookId);
+      expect(paired.visibleBooks.single.isDeleted, isFalse);
+      expect(paired.visibleBooks.single.relativeLocation, 'physical.epub');
+    },
+  );
 
   test('unavailable or interrupted full scan never reconciles as mass deletion', () async {
     final application = await Directory.systemTemp.createTemp('readarc-unavailable-app-');

@@ -50,7 +50,6 @@ class PairingInvite {
     required this.expiresAt,
     required this.inviteLink,
     required this.ownerDeviceName,
-    required this.accountEncryptionKey,
   });
 
   final String code;
@@ -58,7 +57,6 @@ class PairingInvite {
   final DateTime expiresAt;
   final String inviteLink;
   final String ownerDeviceName;
-  final String accountEncryptionKey;
 
   String get displayCode => code;
 
@@ -81,6 +79,17 @@ class PairingClaimResult {
   final String ownerDeviceId;
   final String ownerDeviceName;
   final String accountEncryptionKey;
+}
+
+class PairingSetupException implements Exception {
+  const PairingSetupException(this.stage, this.message, [this.cause]);
+
+  final String stage;
+  final String message;
+  final Object? cause;
+
+  @override
+  String toString() => 'PairingSetupException[$stage]: $message';
 }
 
 class _ParsedPairingInput {
@@ -227,6 +236,7 @@ class SyncService {
     Duration fileChunkAckTimeout = const Duration(seconds: 20),
     this.pauseAfterCommittedChunk,
     this.beforeSendingFileChunk,
+    String? pairingRelayUrlOverride,
   }) : assert(fileChunkSize >= 256 * 1024 && fileChunkSize <= _defaultChunkSize),
        assert(fileChunkAckTimeout > Duration.zero),
        _fileChunkSize = fileChunkSize,
@@ -234,7 +244,8 @@ class SyncService {
        _directTransferServer = directTransferServer ?? DirectTransferServer(),
        _metadataSyncEngine = MetadataSyncEngine(_storage),
        _fileTransferManager = FileTransferManager(appDirectory: _storage.appDir),
-       _pairingService = PairingService(const ConnectionManager());
+       _pairingService = PairingService(const ConnectionManager()),
+       _pairingRelayUrlOverride = pairingRelayUrlOverride?.trim();
 
   final StorageService _storage;
   final MetadataSyncEngine _metadataSyncEngine;
@@ -245,6 +256,7 @@ class SyncService {
   final BeforeSendingFileChunk? beforeSendingFileChunk;
   final ConnectionManager _connectionManager = const ConnectionManager();
   final PairingService _pairingService;
+  final String? _pairingRelayUrlOverride;
   final DirectTransferServer _directTransferServer;
   final SyncAuthorization _authorization = const SyncAuthorization();
   final state = ValueNotifier<SyncStateSnapshot>(
@@ -275,6 +287,7 @@ class SyncService {
   int _reconnectAttempt = 0;
   int _healthMisses = 0;
   String? _lastRelayUrl;
+  Future<PairingInvite>? _pairingInviteCreation;
 
   Stream<LibraryManifest> get manifestChanges => _manifestChanges.stream;
 
@@ -586,11 +599,44 @@ class SyncService {
   Future<PairingInvite> createPairingInvite({
     required SyncSettings settings,
     Duration ttl = const Duration(minutes: 5),
-  }) async {
+  }) {
+    final existing = _pairingInviteCreation;
+    if (existing != null) return existing;
+    final pending = _createPairingInvite(settings: settings, ttl: ttl);
+    _pairingInviteCreation = pending;
+    return pending.whenComplete(() {
+      if (identical(_pairingInviteCreation, pending)) _pairingInviteCreation = null;
+    });
+  }
+
+  Future<PairingInvite> _createPairingInvite({required SyncSettings settings, required Duration ttl}) async {
     _validateEndpointForPairing(settings);
+    final relayUrl = _pairingRelayUrl(settings.effectiveRelayUrl);
+    try {
+      // Reconcile source availability before publishing the owner's baseline.
+      // The scanner still preserves real account-wide tombstones; the pairing
+      // fix is the account boundary on the joining device, not a second
+      // deletion model where physical bytes automatically defeat tombstones.
+      await _storage.refreshLibrary(afterPending: true);
+    } catch (error) {
+      _appendLog('Pairing не готов: этап library_scan (${error.runtimeType})');
+      throw PairingSetupException('library_scan', 'Не удалось проверить LibraryRoot перед pairing', error);
+    }
+
+    try {
+      // A fresh handshake is the readiness barrier. /pairing/start over HTTP
+      // must never advertise a source whose WebSocket is merely assumed alive.
+      await connect(relayUrl: relayUrl);
+    } catch (error) {
+      _appendLog('Pairing не готов: этап relay_ready (${error.runtimeType})');
+      throw PairingSetupException('relay_ready', 'Не удалось подготовить relay-соединение', error);
+    }
     final manifest = await _storage.loadManifest();
-    final uri = _buildEndpointUri(settings.effectiveRelayUrl, '/pairing/start');
-    final response = await _postJson(uri, {
+    await broadcastLibrarySnapshot(reason: 'pairing_owner_ready');
+
+    final uri = _buildEndpointUri(relayUrl, '/pairing/start');
+    final requestId = _uuid.v4();
+    final payload = {
       'accountId': manifest.accountId,
       'ownerDeviceId': manifest.deviceId,
       'ownerDeviceName': manifest.deviceName,
@@ -598,9 +644,17 @@ class SyncService {
       // The short-code pairing flow stores the one-time invite payload on the
       // official relay until it is claimed or expires.
       'accountEncryptionKey': manifest.accountEncryptionKey,
-      'relayUrl': settings.effectiveRelayUrl,
+      'relayUrl': relayUrl,
       'expiresSeconds': ttl.inSeconds,
-    });
+      'requestId': requestId,
+    };
+    Map<String, dynamic> response;
+    try {
+      response = await _postPairingStartWithRetry(uri, payload);
+    } catch (error) {
+      _appendLog('Pairing не готов: этап invite_create (${error.runtimeType})');
+      throw PairingSetupException('invite_create', 'Relay не создал pairing-код', error);
+    }
     if (response['ok'] != true) {
       throw StateError(response['message']?.toString() ?? 'Relay не создал pairing-код');
     }
@@ -616,15 +670,29 @@ class SyncService {
     // stores the full invite payload for a few minutes and returns it from
     // /pairing/claim, so users do not have to scan/type long unreadable links.
     final inviteLink = code;
-    _appendLog('Создан pairing-код $code');
+    _appendLog('Pairing-код создан; секретные данные в журнал не записаны.');
     return PairingInvite(
       code: code,
-      relayUrl: settings.effectiveRelayUrl,
+      relayUrl: relayUrl,
       expiresAt: expiresAt,
       inviteLink: inviteLink,
       ownerDeviceName: manifest.deviceName,
-      accountEncryptionKey: manifest.accountEncryptionKey,
     );
+  }
+
+  Future<Map<String, dynamic>> _postPairingStartWithRetry(Uri uri, Map<String, dynamic> payload) async {
+    try {
+      return await _postJson(uri, payload);
+    } catch (error) {
+      final retryable =
+          error is TimeoutException ||
+          error is SocketException ||
+          error is HttpException ||
+          error is PairingHttpException && error.isTransient;
+      if (!retryable) rethrow;
+      _appendLog('Повторяем создание pairing-кода после временной ошибки (${error.runtimeType}).');
+      return _postJson(uri, payload);
+    }
   }
 
   Future<PairingClaimResult> claimPairingInvite({required String input, required SyncSettings fallbackSettings}) async {
@@ -634,7 +702,7 @@ class SyncService {
       fallbackSettings,
     );
     _validateEndpointForPairing(effectiveSettings);
-    final relayUrl = effectiveSettings.effectiveRelayUrl;
+    final relayUrl = _pairingRelayUrl(effectiveSettings.effectiveRelayUrl);
 
     var local = await _storage.loadManifest();
     if (local.isCurrentDeviceRevoked) {
@@ -750,6 +818,11 @@ class SyncService {
     // Older QR links may still carry a custom/Tailscale relay parameter; keep
     // accepting the link but ignore that endpoint for the actual connection.
     return fallback.asOfficial(autoConnect: true);
+  }
+
+  String _pairingRelayUrl(String fallback) {
+    final override = _pairingRelayUrlOverride;
+    return override == null || override.isEmpty ? fallback : override;
   }
 
   Future<bool> requestBookFile(BookRecord book) async {
