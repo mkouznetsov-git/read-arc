@@ -101,6 +101,19 @@ void main() {
     expect(File(p.join(directory.path, 'manifest.json')).readAsStringSync(), isEmpty);
   });
 
+  test('secure-storage failure preserves a valid manifest instead of quarantining or resetting it', () async {
+    await repository.mutate((current) => current.copyWith(books: [_book('preserved')]));
+    final manifestFile = File(p.join(directory.path, 'manifest.json'));
+    final original = await manifestFile.readAsString();
+    final failing = _repository(directory, _UnavailableSecretStore());
+
+    await expectLater(failing.read(), throwsA(isA<SecureStorageUnavailableException>()));
+
+    expect(await manifestFile.readAsString(), original);
+    expect(Directory(p.join(directory.path, 'manifest_recovery')).existsSync(), isFalse);
+    expect(Directory(p.join(directory.path, 'manifest_rejected')).existsSync(), isFalse);
+  });
+
   test('legacy manifest migrates once, strips secrets and remains idempotent', () async {
     final legacy = _initial().toJson()
       ..remove('schemaVersion')
@@ -245,4 +258,12 @@ class MemorySecretStore implements LibrarySecretStore {
     if (failWrites) throw const FileSystemException('No space left on device');
     values[key] = value;
   }
+}
+
+class _UnavailableSecretStore implements LibrarySecretStore {
+  @override
+  Future<String?> read(String key) async => throw const SecureStorageUnavailableException();
+
+  @override
+  Future<void> write(String key, String value) async => throw const SecureStorageUnavailableException();
 }

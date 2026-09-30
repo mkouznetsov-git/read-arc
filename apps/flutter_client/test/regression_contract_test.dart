@@ -50,6 +50,35 @@ void main() {
       expect(platformValidator, isNot(contains('find android/app')));
     });
 
+    test('Android backup cannot restore encrypted identity material into a new installation', () {
+      final manifest = _read('android/app/src/main/AndroidManifest.xml');
+      final modernRules = _read('android/app/src/main/res/xml/backup_rules.xml');
+      final legacyRules = _read('android/app/src/main/res/xml/backup_rules_legacy.xml');
+      expect(manifest, contains('android:allowBackup="false"'));
+      expect(manifest, contains('android:dataExtractionRules="@xml/backup_rules"'));
+      expect(manifest, contains('android:fullBackupContent="@xml/backup_rules_legacy"'));
+      for (final rules in [modernRules, legacyRules]) {
+        expect(rules, contains('domain="sharedpref" path="."'));
+        expect(rules, contains('domain="file" path="."'));
+        expect(rules, contains('domain="database" path="."'));
+      }
+      final repository = _read('lib/services/library_repository.dart');
+      expect(repository, contains('resetOnError: false'));
+      expect(repository, contains('SecureStorageUnavailableException'));
+      expect(repository, contains('Preserve it verbatim'));
+    });
+
+    test('empty Android library keeps root controls and reports opaque picker failures', () {
+      final main = _read('lib/app/readarc_app.dart');
+      final importer = _read('lib/services/book_import_service.dart');
+      expect(main, contains("onChooseAgain: _chooseLibraryRoot"));
+      expect(main, contains("label: const Text('Сменить папку')"));
+      expect(main, contains("label: const Text('Добавить книгу')"));
+      expect(importer, contains('withReadStream: true'));
+      expect(importer, contains('Выбранный файл недоступен для чтения'));
+      expect(importer, contains('staged.preferredName'));
+    });
+
     test('production package upgrade gates cannot be silently removed', () {
       final gradleProperties = _read('android/gradle.properties');
       final pubspec = _read('pubspec.yaml');

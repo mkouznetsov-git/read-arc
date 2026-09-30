@@ -15,6 +15,22 @@ abstract interface class LibrarySecretStore {
   Future<void> write(String key, String value);
 }
 
+/// Raised when Android/iOS/macOS rejects access to the encrypted secret store.
+///
+/// This is deliberately separate from manifest corruption: quarantining a
+/// valid manifest while a platform keystore is unavailable can turn a
+/// recoverable reinstall into an accidental identity reset. Callers should
+/// keep the on-disk state intact and present the Recovery Key/pairing path.
+class SecureStorageUnavailableException implements IOException {
+  const SecureStorageUnavailableException([this.cause]) : message = 'Secure storage unavailable';
+
+  final Object? cause;
+  final String message;
+
+  @override
+  String toString() => 'SecureStorageUnavailableException';
+}
+
 class PlatformLibrarySecretStore implements LibrarySecretStore {
   PlatformLibrarySecretStore([FlutterSecureStorage? storage])
     : _storage =
@@ -38,10 +54,22 @@ class PlatformLibrarySecretStore implements LibrarySecretStore {
   final FlutterSecureStorage _storage;
 
   @override
-  Future<String?> read(String key) => _storage.read(key: key);
+  Future<String?> read(String key) async {
+    try {
+      return await _storage.read(key: key);
+    } catch (error) {
+      throw SecureStorageUnavailableException(error);
+    }
+  }
 
   @override
-  Future<void> write(String key, String value) => _storage.write(key: key, value: value);
+  Future<void> write(String key, String value) async {
+    try {
+      await _storage.write(key: key, value: value);
+    } catch (error) {
+      throw SecureStorageUnavailableException(error);
+    }
+  }
 }
 
 class ManifestRecoveryException implements IOException {
@@ -176,6 +204,10 @@ class LibraryRepository {
         await _writeVerified(hydrated, previous: decoded);
       }
       return hydrated;
+    } on SecureStorageUnavailableException {
+      // The manifest is still valid. Preserve it verbatim so the user can
+      // recover through a fresh installation, Recovery Key, or pairing.
+      rethrow;
     } catch (error) {
       await _quarantine(file, error);
       final recovered = await _recoverFromCandidates(file);

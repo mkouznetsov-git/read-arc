@@ -94,6 +94,34 @@ void main() {
     expect((await restarted.refreshLibrary())?.books.single.id, imported.id);
   });
 
+  test('Android picker selections without an absolute path import through the read stream/bytes fallback', () async {
+    final application = await Directory.systemTemp.createTemp('readarc-picker-fallback-app-');
+    final library = await Directory.systemTemp.createTemp('readarc-picker-fallback-root-');
+    addTearDown(() async {
+      for (final directory in [application, library]) {
+        if (await directory.exists()) await directory.delete(recursive: true);
+      }
+    });
+    final storage = StorageService(
+      appDirectory: () async => application,
+      secretStore: _MemorySecretStore(),
+      libraryStorageProvider: LocalDirectoryLibraryStorageProvider(),
+    );
+    await storage.configureLibraryRoot(
+      LibraryRoot(kind: LibraryRootKind.desktopPath, locator: library.path, displayName: 'Library'),
+    );
+    final payload = Uint8List.fromList(utf8.encode('picked from an opaque Android content URI'));
+    final imported = await BookImportService(
+      storage,
+      pickBookFile: () async => PlatformFile(name: 'opaque.epub', size: payload.length, bytes: payload),
+    ).pickAndImport();
+
+    expect(imported, isNotNull);
+    expect(imported!.relativeLocation, 'opaque.epub');
+    expect(await File(p.join(library.path, 'opaque.epub')).readAsBytes(), payload);
+    expect(await Directory(p.join(application.path, 'import_staging')).list().toList(), isEmpty);
+  });
+
   test('same SHA import reuses the existing root file while filename collisions stay distinct', () async {
     final application = await Directory.systemTemp.createTemp('readarc-dedupe-app-');
     final library = await Directory.systemTemp.createTemp('readarc-dedupe-root-');

@@ -48,6 +48,10 @@ const Color _raInkBlue = Color(0xFF2A2F4A);
 const Color _raMutedPaper = Color(0xFFCFC5B5);
 const Color _raFaintIndigo = Color(0xFF4A405F);
 
+String _friendlyLibraryLoadError(Object error) => error is SecureStorageUnavailableException
+    ? 'Не удалось открыть защищённое хранилище ReadArc. Данные библиотеки сохранены; повторите запуск после переустановки или восстановите аккаунт через Recovery Key/подключённое устройство.'
+    : 'Не удалось загрузить библиотеку. Повторите попытку.';
+
 void runReadArcApp() {
   runZonedGuarded(
     () {
@@ -235,7 +239,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
     } catch (error, stackTrace) {
       debugPrint('ReadArc manifest load failed: $error\n$stackTrace');
       if (!mounted) return;
-      setState(() => _libraryLoadError = 'Не удалось загрузить библиотеку: $error');
+      setState(() => _libraryLoadError = _friendlyLibraryLoadError(error));
     }
   }
 
@@ -600,7 +604,12 @@ class _LibraryScreenState extends State<LibraryScreen> {
           : _libraryRoot == null
           ? _LibraryRootSetupView(onChoose: _chooseLibraryRoot, busy: _busy)
           : books.isEmpty
-          ? const _EmptyLibrary()
+          ? _EmptyLibrary(
+              root: _libraryRoot!,
+              busy: _busy,
+              onAddBook: _addBook,
+              onChooseAgain: _chooseLibraryRoot,
+            )
           : ValueListenableBuilder<SyncStateSnapshot>(
               valueListenable: widget.sync.state,
               builder: (context, syncState, _) {
@@ -680,16 +689,64 @@ class _LibraryLoadErrorView extends StatelessWidget {
 }
 
 class _EmptyLibrary extends StatelessWidget {
-  const _EmptyLibrary();
+  const _EmptyLibrary({
+    required this.root,
+    required this.busy,
+    required this.onAddBook,
+    required this.onChooseAgain,
+  });
+
+  final LibraryRoot root;
+  final bool busy;
+  final Future<void> Function() onAddBook;
+  final Future<void> Function() onChooseAgain;
 
   @override
   Widget build(BuildContext context) {
-    return const Center(
-      child: Padding(
-        padding: EdgeInsets.all(32),
-        child: Text(
-          'В выбранной папке пока нет поддерживаемых книг. Добавьте файл через ReadArc или файловый менеджер.',
-          textAlign: TextAlign.center,
+    return Center(
+      child: SingleChildScrollView(
+        padding: const EdgeInsets.all(28),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(Icons.library_books_outlined, size: 54, color: _raWarmGold),
+            const SizedBox(height: 16),
+            const Text(
+              'В выбранной библиотеке пока нет книг',
+              textAlign: TextAlign.center,
+              style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700),
+            ),
+            const SizedBox(height: 10),
+            Text(
+              'Папка: ${root.displayName}',
+              textAlign: TextAlign.center,
+              style: const TextStyle(color: _raMutedPaper),
+            ),
+            const SizedBox(height: 8),
+            const Text(
+              'Добавьте поддерживаемый файл или выберите другой LibraryRoot. Физические файлы в выбранной папке не удаляются автоматически.',
+              textAlign: TextAlign.center,
+              style: TextStyle(color: _raMutedPaper),
+            ),
+            const SizedBox(height: 22),
+            Wrap(
+              alignment: WrapAlignment.center,
+              spacing: 12,
+              runSpacing: 12,
+              children: [
+                FilledButton.icon(
+                  onPressed: busy ? null : () => unawaited(onAddBook()),
+                  icon: const Icon(Icons.add_rounded),
+                  label: const Text('Добавить книгу'),
+                ),
+                OutlinedButton.icon(
+                  onPressed: busy ? null : () => unawaited(onChooseAgain()),
+                  icon: const Icon(Icons.folder_open_outlined),
+                  label: const Text('Сменить папку'),
+                ),
+              ],
+            ),
+          ],
         ),
       ),
     );
