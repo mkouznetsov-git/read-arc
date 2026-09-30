@@ -604,12 +604,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
           : _libraryRoot == null
           ? _LibraryRootSetupView(onChoose: _chooseLibraryRoot, busy: _busy)
           : books.isEmpty
-          ? _EmptyLibrary(
-              root: _libraryRoot!,
-              busy: _busy,
-              onAddBook: _addBook,
-              onChooseAgain: _chooseLibraryRoot,
-            )
+          ? _EmptyLibrary(root: _libraryRoot!, busy: _busy, onAddBook: _addBook, onChooseAgain: _chooseLibraryRoot)
           : ValueListenableBuilder<SyncStateSnapshot>(
               valueListenable: widget.sync.state,
               builder: (context, syncState, _) {
@@ -689,12 +684,7 @@ class _LibraryLoadErrorView extends StatelessWidget {
 }
 
 class _EmptyLibrary extends StatelessWidget {
-  const _EmptyLibrary({
-    required this.root,
-    required this.busy,
-    required this.onAddBook,
-    required this.onChooseAgain,
-  });
+  const _EmptyLibrary({required this.root, required this.busy, required this.onAddBook, required this.onChooseAgain});
 
   final LibraryRoot root;
   final bool busy;

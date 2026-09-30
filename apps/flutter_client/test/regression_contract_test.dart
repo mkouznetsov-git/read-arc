@@ -111,7 +111,7 @@ void main() {
       expect(macosPackager, contains('CFBundleShortVersionString'));
       expect(androidPackager, contains('versionName='));
       expect(_read('lib/services/library_repository.dart'), contains('usesDataProtectionKeychain: false'));
-      expect(pubspec, contains('flutter_secure_storage: 10.3.0'));
+      expect(pubspec, contains('flutter_secure_storage: 10.3.4'));
       expect(lockfile, contains('flutter_secure_storage_darwin'));
       expect(lockfile, contains('version: "0.3.2"'));
     });

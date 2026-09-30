@@ -435,7 +435,12 @@ class StorageService {
     return _libraryStorageProvider.materialize(root, entry, await _materializedBooksDir());
   }
 
-  Future<String> importIntoLibrary(File source, {required String preferredName, String? expectedSha256}) async {
+  Future<String> importIntoLibrary(
+    File source, {
+    required String preferredName,
+    String? expectedSha256,
+    bool explicitUserImport = false,
+  }) async {
     final root = await configuredLibraryRoot();
     if (root == null) throw StateError('Сначала выберите корневую папку библиотеки');
     final before = await refreshLibrary(afterPending: true);
@@ -444,10 +449,18 @@ class StorageService {
           .where((entry) => entry.contentSha256 == expectedSha256)
           .map((entry) => entry.relativeLocation)
           .firstOrNull;
-      if (existing != null) return existing;
+      if (existing != null) {
+        if (explicitUserImport) {
+          await _resurrectExplicitlyImportedBook(expectedSha256);
+        }
+        return existing;
+      }
     }
     final relative = await _libraryStorageProvider.importFile(root, source, preferredName: preferredName);
     final result = await refreshLibrary(afterPending: true);
+    if (explicitUserImport && expectedSha256 != null) {
+      await _resurrectExplicitlyImportedBook(expectedSha256);
+    }
     if (expectedSha256 != null &&
         result?.index.entries.any(
               (entry) => entry.relativeLocation == relative && entry.contentSha256 == expectedSha256,
@@ -456,6 +469,33 @@ class StorageService {
       throw const FileSystemException('Imported library copy failed SHA-256 verification');
     }
     return relative;
+  }
+
+  Future<void> _resurrectExplicitlyImportedBook(String bookId) async {
+    var resurrected = false;
+    await mutateManifest((manifest) {
+      final existing = manifest.books.where((book) => book.id == bookId).firstOrNull;
+      if (existing == null || !existing.isDeleted) return manifest;
+      final revision = _nextRevision(manifest);
+      resurrected = true;
+      return manifest.copyWith(
+        books: manifest.books
+            .map(
+              (book) => book.id == bookId
+                  ? book.copyWith(
+                      clearDeletedAt: true,
+                      metadataRevision: revision,
+                      updatedByDeviceId: manifest.deviceId,
+                      updatedAt: DateTime.now().toUtc(),
+                      tombstoneAckedByDeviceIds: const [],
+                    )
+                  : book,
+            )
+            .toList(),
+        logicalClock: revision.counter,
+      );
+    });
+    if (resurrected) await flushPortableState();
   }
 
   Future<LibraryManifest> commitReceivedBook({required BookRecord book, required File verifiedFile}) async {

@@ -25,7 +25,7 @@ class BookImportService {
     if (picked == null) return null;
     final staged = await _materializePickedFile(picked);
     try {
-      return _importFile(staged.file, preferredName: staged.preferredName);
+      return await _importFile(staged.file, preferredName: staged.preferredName);
     } finally {
       if (staged.owned && await staged.file.exists()) await staged.file.delete();
     }
@@ -107,7 +107,12 @@ class BookImportService {
     final digest = await sha256.bind(sourceFile.openRead()).first;
     final sha = digest.toString();
 
-    await _storage.importIntoLibrary(sourceFile, preferredName: fileName, expectedSha256: sha);
+    await _storage.importIntoLibrary(
+      sourceFile,
+      preferredName: fileName,
+      expectedSha256: sha,
+      explicitUserImport: true,
+    );
     final manifest = await _storage.loadManifest();
     final imported = manifest.books.where((candidate) => candidate.id == sha).firstOrNull;
     if (imported == null) {

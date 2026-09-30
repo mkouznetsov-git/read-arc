@@ -151,6 +151,41 @@ void main() {
     expect(await library.list().where((entity) => entity is File).length, 2);
   });
 
+  test('explicit same-SHA re-import resurrects an account deletion with a newer revision', () async {
+    final application = await Directory.systemTemp.createTemp('readarc-reimport-app-');
+    final library = await Directory.systemTemp.createTemp('readarc-reimport-root-');
+    final sources = await Directory.systemTemp.createTemp('readarc-reimport-source-');
+    addTearDown(() async {
+      for (final directory in [application, library, sources]) {
+        if (await directory.exists()) await directory.delete(recursive: true);
+      }
+    });
+    final storage = StorageService(
+      appDirectory: () async => application,
+      secretStore: _MemorySecretStore(),
+      libraryStorageProvider: LocalDirectoryLibraryStorageProvider(),
+    );
+    await storage.configureLibraryRoot(
+      LibraryRoot(kind: LibraryRootKind.desktopPath, locator: library.path, displayName: 'Library'),
+    );
+    final source = File(p.join(sources.path, 'original.epub'))..writeAsStringSync('same SHA content', flush: true);
+    final first = await BookImportService(storage).importFile(source);
+    await storage.deleteBookFromLibrary(first.id);
+    final deleted = (await storage.loadManifest()).books.singleWhere((book) => book.id == first.id);
+    expect(deleted.isDeleted, isTrue);
+    expect(await File(p.join(library.path, first.relativeLocation!)).exists(), isFalse);
+
+    final reimport = File(p.join(sources.path, 'restored.epub'))..writeAsStringSync('same SHA content', flush: true);
+    final restored = await BookImportService(storage).importFile(reimport);
+    final current = (await storage.loadManifest()).books.singleWhere((book) => book.id == first.id);
+
+    expect(restored.id, first.id);
+    expect(current.isDeleted, isFalse);
+    expect(current.metadataRevision.counter, greaterThan(deleted.metadataRevision.counter));
+    expect((await storage.loadManifest()).visibleBooks.single.id, first.id);
+    expect(await File(p.join(library.path, current.relativeLocation!)).exists(), isTrue);
+  });
+
   test(
     'authenticated pairing drops old-account tombstones but preserves installation identity and physical files',
     () async {
