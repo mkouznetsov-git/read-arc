@@ -95,6 +95,33 @@ void main() {
     expect((await restarted.refreshLibrary())?.books.single.id, imported.id);
   });
 
+  test('changing LibraryRoot leaves the previous user-owned files in place', () async {
+    final application = await Directory.systemTemp.createTemp('readarc-root-change-app-');
+    final firstRoot = await Directory.systemTemp.createTemp('readarc-root-change-first-');
+    final secondRoot = await Directory.systemTemp.createTemp('readarc-root-change-second-');
+    addTearDown(() async {
+      for (final directory in [application, firstRoot, secondRoot]) {
+        if (await directory.exists()) await directory.delete(recursive: true);
+      }
+    });
+    final storage = StorageService(
+      appDirectory: () async => application,
+      secretStore: _MemorySecretStore(),
+      libraryStorageProvider: LocalDirectoryLibraryStorageProvider(),
+    );
+    final oldRoot = LibraryRoot(kind: LibraryRootKind.desktopPath, locator: firstRoot.path, displayName: 'Old');
+    await storage.configureLibraryRoot(oldRoot);
+    final oldBook = File(p.join(firstRoot.path, 'kept.epub'))..writeAsStringSync('keep me', flush: true);
+    await storage.refreshLibrary(afterPending: true);
+
+    await storage.configureLibraryRoot(
+      LibraryRoot(kind: LibraryRootKind.desktopPath, locator: secondRoot.path, displayName: 'New'),
+    );
+
+    expect(await oldBook.exists(), isTrue);
+    expect(await oldBook.readAsString(), 'keep me');
+  });
+
   test('Android picker selections without an absolute path import through the read stream/bytes fallback', () async {
     final application = await Directory.systemTemp.createTemp('readarc-picker-fallback-app-');
     final library = await Directory.systemTemp.createTemp('readarc-picker-fallback-root-');
@@ -185,6 +212,55 @@ void main() {
     expect(current.metadataRevision.counter, greaterThan(deleted.metadataRevision.counter));
     expect((await storage.loadManifest()).visibleBooks.single.id, first.id);
     expect(await File(p.join(library.path, current.relativeLocation!)).exists(), isTrue);
+  });
+
+  test('a different new SHA remains visible when another book has a remote tombstone', () async {
+    final application = await Directory.systemTemp.createTemp('readarc-new-sha-tombstone-app-');
+    final library = await Directory.systemTemp.createTemp('readarc-new-sha-tombstone-root-');
+    final sources = await Directory.systemTemp.createTemp('readarc-new-sha-tombstone-source-');
+    addTearDown(() async {
+      for (final directory in [application, library, sources]) {
+        if (await directory.exists()) await directory.delete(recursive: true);
+      }
+    });
+    final storage = StorageService(
+      appDirectory: () async => application,
+      secretStore: _MemorySecretStore(),
+      libraryStorageProvider: LocalDirectoryLibraryStorageProvider(),
+    );
+    await storage.configureLibraryRoot(
+      LibraryRoot(kind: LibraryRootKind.desktopPath, locator: library.path, displayName: 'Library'),
+    );
+    final firstSource = File(p.join(sources.path, 'deleted.epub'))..writeAsStringSync('deleted remotely', flush: true);
+    final deletedBook = await BookImportService(storage).importFile(firstSource);
+    await storage.mutateManifest((manifest) {
+      final revision = SyncRevision(counter: manifest.logicalClock + 1, deviceId: 'remote-mac');
+      return manifest.copyWith(
+        books: manifest.books
+            .map(
+              (book) => book.id == deletedBook.id
+                  ? book.copyWith(
+                      deletedAt: DateTime.utc(2026),
+                      metadataRevision: revision,
+                      updatedByDeviceId: 'remote-mac',
+                      availableOnDeviceIds: const [],
+                      tombstoneAckedByDeviceIds: const [],
+                    )
+                  : book,
+            )
+            .toList(),
+        logicalClock: revision.counter,
+      );
+    });
+
+    final newSource = File(p.join(sources.path, 'new.epub'))..writeAsStringSync('brand new SHA', flush: true);
+    final newBook = await BookImportService(storage).importFile(newSource);
+    final manifest = await storage.loadManifest();
+
+    expect(manifest.books.singleWhere((book) => book.id == deletedBook.id).isDeleted, isTrue);
+    expect(manifest.visibleBooks.map((book) => book.id), contains(newBook.id));
+    expect(await File(p.join(library.path, 'deleted.epub')).exists(), isTrue);
+    expect(await File(p.join(library.path, newBook.relativeLocation!)).exists(), isTrue);
   });
 
   test(

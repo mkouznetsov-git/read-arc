@@ -74,6 +74,8 @@ void main() {
       expect(main, contains("onChooseAgain: _chooseLibraryRoot"));
       expect(main, contains("label: const Text('Сменить папку')"));
       expect(main, contains("label: const Text('Добавить книгу')"));
+      expect(main, contains("'Папка: \${root.displayName}'"));
+      expect(main, contains('_friendlyBookImportError(error)'));
       expect(importer, contains('withReadStream: true'));
       expect(importer, contains('Выбранный файл недоступен для чтения'));
       expect(importer, contains('staged.preferredName'));

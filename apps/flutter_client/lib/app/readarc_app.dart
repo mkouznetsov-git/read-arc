@@ -53,6 +53,15 @@ String _friendlyLibraryLoadError(Object error) => error is SecureStorageUnavaila
     ? 'Не удалось открыть защищённое хранилище ReadArc. Данные библиотеки сохранены; повторите запуск после переустановки или восстановите аккаунт через Recovery Key/подключённое устройство.'
     : 'Не удалось загрузить библиотеку. Повторите попытку.';
 
+String _friendlyBookImportError(Object error) {
+  if (error is UnsupportedError) return error.message?.toString() ?? 'Этот формат книги не поддерживается.';
+  if (error is FileSystemException) {
+    final message = error.message;
+    if (message != null && message.isNotEmpty) return message;
+  }
+  return 'Не удалось прочитать выбранный файл. Проверьте доступ к нему и попробуйте выбрать файл ещё раз.';
+}
+
 void runReadArcApp() {
   runZonedGuarded(
     () {
@@ -374,7 +383,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
       await _reload();
     } catch (error) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Не удалось добавить книгу: $error')));
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(_friendlyBookImportError(error))));
     } finally {
       if (mounted) setState(() => _busy = false);
     }
