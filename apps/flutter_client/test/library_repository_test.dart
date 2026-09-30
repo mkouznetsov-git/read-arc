@@ -218,7 +218,7 @@ void main() {
   });
 }
 
-LibraryRepository _repository(Directory directory, MemorySecretStore secrets) => LibraryRepository(
+LibraryRepository _repository(Directory directory, LibrarySecretStore secrets) => LibraryRepository(
   appDirectory: () async => directory,
   secretStore: secrets,
   createInitialManifest: () async => _initial(),
