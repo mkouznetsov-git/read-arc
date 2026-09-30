@@ -24,6 +24,7 @@ import '../reader/reader_exit_checkpoint.dart';
 import '../services/book_import_service.dart';
 import '../services/format_engines/djvu_embedded_engine.dart';
 import '../services/format_engines/djvu_embedded_probe.dart';
+import '../services/library_repository.dart';
 import '../services/storage_service.dart';
 import '../services/library_storage.dart';
 import '../services/portable_library_state.dart';
