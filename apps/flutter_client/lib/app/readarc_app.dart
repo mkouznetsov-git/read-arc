@@ -55,10 +55,7 @@ String _friendlyLibraryLoadError(Object error) => error is SecureStorageUnavaila
 
 String _friendlyBookImportError(Object error) {
   if (error is UnsupportedError) return error.message?.toString() ?? 'Этот формат книги не поддерживается.';
-  if (error is FileSystemException) {
-    final message = error.message;
-    if (message != null && message.isNotEmpty) return message;
-  }
+  if (error is FileSystemException && error.message.isNotEmpty) return error.message;
   return 'Не удалось прочитать выбранный файл. Проверьте доступ к нему и попробуйте выбрать файл ещё раз.';
 }
 
