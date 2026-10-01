@@ -16,7 +16,7 @@ void main() {
     final fixture = await _mount(tester);
     expect(find.text('Папка: First folder'), findsOneWidget);
     await tester.tap(find.text('Сменить папку'));
-    await _waitFor(tester, find.text('Папка: Second folder'));
+    await _waitFor(tester, find.text('Папка: second'));
     expect(fixture.provider.chooseCalls, 1);
 
     await tester.tap(find.widgetWithText(FilledButton, 'Добавить книгу'));
@@ -83,7 +83,7 @@ Future<_Fixture> _mount(WidgetTester tester, {bool failSecrets = false}) async {
   final storage = StorageService(
     appDirectory: () async => Directory('${directory.path}/app'),
     secretStore: secrets,
-    libraryStorageProvider: provider,
+    libraryStorageProvider: provider.storage,
   );
   final fixture = _Fixture(directory, provider, storage);
   await tester.runAsync(() async {
@@ -145,23 +145,22 @@ class _Fixture {
   String originalManifest = '';
 }
 
-class _Provider extends LocalDirectoryLibraryStorageProvider {
+class _Provider {
   _Provider(this.nextRoot);
   final LibraryRoot nextRoot;
   int chooseCalls = 0;
   bool failImport = false;
-
-  @override
-  Future<LibraryRoot?> chooseRoot() async {
-    chooseCalls++;
-    return nextRoot;
-  }
-
-  @override
-  Future<String> importFile(LibraryRoot root, File source, {required String preferredName}) async {
-    if (failImport) throw PlatformException(code: 'saf_permission', message: 'Java NullPointerException: private path');
-    return super.importFile(root, source, preferredName: preferredName);
-  }
+  late final storage = LocalDirectoryLibraryStorageProvider(
+    chooseDirectory: () async {
+      chooseCalls++;
+      return nextRoot.locator;
+    },
+    afterStagedCopy: (_) async {
+      if (failImport) {
+        throw PlatformException(code: 'saf_permission', message: 'Java NullPointerException: private path');
+      }
+    },
+  );
 }
 
 class _Secrets implements LibrarySecretStore {
