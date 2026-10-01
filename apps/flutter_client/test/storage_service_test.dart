@@ -138,16 +138,37 @@ void main() {
     await storage.configureLibraryRoot(
       LibraryRoot(kind: LibraryRootKind.desktopPath, locator: library.path, displayName: 'Library'),
     );
-    final payload = Uint8List.fromList(utf8.encode('picked from an opaque Android content URI'));
-    final imported = await BookImportService(
-      storage,
-      pickBookFile: () async => PlatformFile(name: 'opaque.epub', size: payload.length, bytes: payload),
-    ).pickAndImport();
-
-    expect(imported, isNotNull);
-    expect(imported!.relativeLocation, 'opaque.epub');
-    expect(await File(p.join(library.path, 'opaque.epub')).readAsBytes(), payload);
+    for (final streamed in [false, true]) {
+      final name = streamed ? 'streamed.epub' : 'bytes.epub';
+      final payload = Uint8List.fromList(utf8.encode('picked content: $name'));
+      final imported = await BookImportService(
+        storage,
+        pickBookFile: () async => PlatformFile(
+          name: name,
+          size: payload.length,
+          bytes: streamed ? null : payload,
+          readStream: streamed ? Stream<List<int>>.fromIterable([payload.sublist(0, 5), payload.sublist(5)]) : null,
+        ),
+      ).pickAndImport();
+      expect(imported, isNotNull);
+      expect(imported!.relativeLocation, name);
+      expect(await File(p.join(library.path, name)).readAsBytes(), payload);
+      expect(await Directory(p.join(application.path, 'import_staging')).list().toList(), isEmpty);
+    }
+    await expectLater(
+      BookImportService(
+        storage,
+        pickBookFile: () async => PlatformFile(
+          name: 'broken.epub',
+          size: 10,
+          readStream: Stream<List<int>>.error(const FileSystemException('provider read failed')),
+        ),
+      ).pickAndImport(),
+      throwsA(isA<FileSystemException>()),
+    );
+    expect(await File(p.join(library.path, 'broken.epub')).exists(), isFalse);
     expect(await Directory(p.join(application.path, 'import_staging')).list().toList(), isEmpty);
+    await storage.dispose();
   });
 
   test('same SHA import reuses the existing root file while filename collisions stay distinct', () async {

@@ -70,9 +70,11 @@ plaintext fallback и автоматического удаления secrets н
 ## Проверки
 
 - `library_empty_recovery_test.dart`: нажатия обеих кнопок empty view,
-  реальный stream import и обновление списка без restart, provider failure и retry,
-  PlatformException через real secret-store wrapper, безопасный UI и сохранность manifest.
-- `storage_service_test.dart`: bytes fallback/cleanup, новый SHA при другом tombstone,
+  обновление списка без restart, provider failure и retry, PlatformException через
+  real secret-store wrapper, безопасный UI и отсутствие сброса состояния.
+  UI использует управляемую память; настоящий filesystem проверяется отдельно.
+- `storage_service_test.dart`: bytes и stream fallback, cleanup после успеха/ошибки чтения,
+  новый SHA при другом tombstone,
   same-SHA после локального удаления и при surviving remote file; смена root без удаления файлов.
 - `library_repository_test.dart`: недоступные secrets не карантинят валидный manifest.
 - `regression_contract_test.dart`: backup exclusions и fail-closed параметры.

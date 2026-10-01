@@ -1,180 +1,165 @@
-import 'dart:io';
-
-import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:readarc/app/readarc_app.dart';
+import 'package:readarc/models/book.dart';
+import 'package:readarc/models/manifest.dart';
 import 'package:readarc/services/book_import_service.dart';
 import 'package:readarc/services/library_repository.dart';
+import 'package:readarc/services/library_scanner.dart';
 import 'package:readarc/services/library_storage.dart';
+import 'package:readarc/services/portable_library_state.dart';
 import 'package:readarc/services/storage_service.dart';
 import 'package:readarc/services/sync/sync_service.dart';
 
+// UI transitions use deterministic state. Real filesystem, stream, tombstone
+// and manifest-preservation behavior is tested in storage_service_test and
+// library_repository_test, outside Flutter's fake async clock.
 void main() {
-  testWidgets('empty library can change root and import a streamed book without restart', (tester) async {
+  testWidgets('empty library can change root and add a book without restart', (tester) async {
     final fixture = await _mount(tester);
     expect(find.text('Папка: First folder'), findsOneWidget);
     await tester.tap(find.text('Сменить папку'));
-    await _waitFor(tester, find.text('Папка: second'));
-    expect(fixture.provider.chooseCalls, 1);
-
+    await tester.pumpAndSettle();
+    expect(find.text('Папка: Second folder'), findsOneWidget);
+    expect(fixture.storage.chooseCalls, 1);
+    final scansBefore = fixture.storage.scanCalls;
     await tester.tap(find.widgetWithText(FilledButton, 'Добавить книгу'));
-    await _waitFor(tester, find.text('streamed'));
-    expect(fixture.pickCalls, 1);
+    await tester.pumpAndSettle();
+    expect(fixture.importer.pickCalls, 1);
+    expect(fixture.storage.scanCalls, greaterThan(scansBefore));
+    expect(find.text('Imported book'), findsOneWidget);
     expect(find.text('В выбранной библиотеке пока нет книг'), findsNothing);
-    await tester.runAsync(() async {
-      expect((await fixture.storage.loadManifest()).visibleBooks, hasLength(1));
-      expect(await File('${fixture.directory.path}/second/streamed.txt').readAsString(), 'streamed book');
-      expect(await Directory('${fixture.directory.path}/app/import_staging').list().toList(), isEmpty);
-    });
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('SAF import failure is visible and retry succeeds without raw plugin details', (tester) async {
+  testWidgets('provider failure is visible and retry succeeds without raw plugin details', (tester) async {
     final fixture = await _mount(tester);
-    fixture.provider.failImport = true;
+    fixture.importer.failImport = true;
     await tester.tap(find.widgetWithText(FilledButton, 'Добавить книгу'));
-    await _waitFor(tester, find.textContaining('Не удалось прочитать выбранный файл'));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('Не удалось прочитать выбранный файл'), findsOneWidget);
     expect(find.textContaining('PlatformException'), findsNothing);
     expect(find.textContaining('NullPointerException'), findsNothing);
     expect(find.text('Папка: First folder'), findsOneWidget);
-    fixture.provider.failImport = false;
+    fixture.importer.failImport = false;
     await tester.tap(find.widgetWithText(FilledButton, 'Добавить книгу'));
-    await _waitFor(tester, find.text('streamed'));
-    expect(fixture.pickCalls, 2);
+    await tester.pumpAndSettle();
+    expect(find.text('Imported book'), findsOneWidget);
+    expect(fixture.importer.pickCalls, 2);
     expect(tester.takeException(), isNull);
   });
 
-  testWidgets('unreadable platform secrets show recovery guidance and preserve manifest on retry', (tester) async {
+  testWidgets('platform secret errors show recovery guidance and retry without clearing state', (tester) async {
     final fixture = await _mount(tester, failSecrets: true);
+    final original = fixture.storage.manifest;
     final guidance = find.textContaining('Защищённые данные этой установки недоступны');
     expect(guidance, findsOneWidget);
     expect(find.textContaining('Recovery Key'), findsOneWidget);
     expect(find.textContaining('PlatformException'), findsNothing);
     expect(find.textContaining('NullPointerException'), findsNothing);
     expect(tester.widget<FloatingActionButton>(find.byType(FloatingActionButton)).onPressed, isNull);
+    final reads = fixture.storage.readCalls;
     await tester.tap(find.text('Повторить'));
-    await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 50)));
-    await tester.pump();
+    await tester.pumpAndSettle();
+    expect(fixture.storage.readCalls, greaterThan(reads));
     expect(guidance, findsOneWidget);
-    await tester.runAsync(() async {
-      expect(await File('${fixture.directory.path}/app/manifest.json').readAsString(), fixture.originalManifest);
-      expect(await Directory('${fixture.directory.path}/app/manifest_recovery').exists(), isFalse);
-    });
+    expect(identical(fixture.storage.manifest, original), isTrue);
+    fixture.storage.failSecrets = false;
+    await tester.tap(find.text('Повторить'));
+    await tester.pumpAndSettle();
+    expect(find.text('Папка: First folder'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
 }
 
-Future<void> _waitFor(WidgetTester tester, Finder finder) async {
-  for (var attempt = 0; attempt < 200 && finder.evaluate().isEmpty; attempt++) {
-    await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 25)));
-    await tester.pump();
-  }
-  expect(finder, findsOneWidget);
-}
-
 Future<_Fixture> _mount(WidgetTester tester, {bool failSecrets = false}) async {
-  final directory = (await tester.runAsync(() => Directory.systemTemp.createTemp('readarc-empty-ui-')))!;
-  final provider = _Provider(
-    LibraryRoot(kind: LibraryRootKind.desktopPath, locator: '${directory.path}/second', displayName: 'Second folder'),
-  );
-  final secrets = _Secrets();
-  // Storage owns an initially pending Future.value() write queue. Construct
-  // and initialize it in the real async zone so runAsync never waits for a
-  // microtask trapped in the widget test's fake clock.
-  final storage = (await tester.runAsync(() async {
-    final storage = StorageService(
-      appDirectory: () async => Directory('${directory.path}/app'),
-      secretStore: secrets,
-      libraryStorageProvider: provider.storage,
-    );
-    await Directory('${directory.path}/first').create();
-    await Directory('${directory.path}/second').create();
-    await storage.configureLibraryRoot(
-      LibraryRoot(kind: LibraryRootKind.desktopPath, locator: '${directory.path}/first', displayName: 'First folder'),
-    );
-    return storage;
-  }))!;
-  final fixture = _Fixture(directory, provider, storage);
-  fixture.originalManifest = (await tester.runAsync(() => File('${directory.path}/app/manifest.json').readAsString()))!;
-  // Exercise the real PlatformLibrarySecretStore exception translation, too.
+  final storage = _Storage()..failSecrets = failSecrets;
+  final importer = _Importer(storage);
+  final sync = SyncService(storage);
   const channel = MethodChannel('plugins.it_nomads.com/flutter_secure_storage');
   final messenger = TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
-  if (failSecrets) {
-    messenger.setMockMethodCallHandler(channel, (_) async {
-      throw PlatformException(code: 'read', message: 'Java NullPointerException: secret diagnostic');
-    });
-    secrets.platform = PlatformLibrarySecretStore();
-  }
-  final sync = SyncService(storage);
+  messenger.setMockMethodCallHandler(channel, (_) async {
+    throw PlatformException(code: 'read', message: 'Java NullPointerException: secret diagnostic');
+  });
   addTearDown(() async {
     await tester.pumpWidget(const SizedBox.shrink());
+    await sync.dispose();
     messenger.setMockMethodCallHandler(channel, null);
-    await tester.runAsync(() async {
-      await sync.dispose();
-      secrets.platform = null;
-      await storage.dispose();
-      await directory.delete(recursive: true);
-    });
   });
   await tester.pumpWidget(
     MaterialApp(
-      home: LibraryScreen(
-        storage: storage,
-        sync: sync,
-        importService: BookImportService(
-          storage,
-          pickBookFile: () async {
-            fixture.pickCalls++;
-            return PlatformFile(name: 'streamed.txt', size: 13, readStream: Stream.value('streamed book'.codeUnits));
-          },
-        ),
-      ),
+      home: LibraryScreen(storage: storage, sync: sync, importService: importer),
     ),
   );
-  await _waitFor(
-    tester,
-    find.textContaining(failSecrets ? 'Защищённые данные этой установки недоступны' : 'Папка: First folder'),
-  );
-  return fixture;
+  await tester.pumpAndSettle();
+  return _Fixture(storage, importer);
 }
 
 class _Fixture {
-  _Fixture(this.directory, this.provider, this.storage);
-  final Directory directory;
-  final _Provider provider;
-  final StorageService storage;
-  int pickCalls = 0;
-  String originalManifest = '';
+  _Fixture(this.storage, this.importer);
+  final _Storage storage;
+  final _Importer importer;
 }
 
-class _Provider {
-  _Provider(this.nextRoot);
-  final LibraryRoot nextRoot;
-  int chooseCalls = 0;
-  bool failImport = false;
-  late final storage = LocalDirectoryLibraryStorageProvider(
-    chooseDirectory: () async {
-      chooseCalls++;
-      return nextRoot.locator;
-    },
-    afterStagedCopy: (_) async {
-      if (failImport) {
-        throw PlatformException(code: 'saf_permission', message: 'Java NullPointerException: private path');
-      }
-    },
+class _Storage extends StorageService {
+  LibraryManifest manifest = LibraryManifest(accountId: 'test-account', deviceId: 'test-device');
+  LibraryRoot root = const LibraryRoot(
+    kind: LibraryRootKind.desktopPath,
+    locator: '/first',
+    displayName: 'First folder',
   );
+  bool failSecrets = false;
+  int chooseCalls = 0;
+  int readCalls = 0;
+  int scanCalls = 0;
+
+  @override
+  Future<LibraryManifest> loadManifest() async {
+    readCalls++;
+    if (failSecrets) await PlatformLibrarySecretStore().read(LibraryRepository.accountKeySecret);
+    return manifest;
+  }
+
+  @override
+  Future<bool> resumePendingLibraryMigration() async => false;
+  @override
+  Future<LibraryRoot?> configuredLibraryRoot() async => root;
+  @override
+  Future<LibraryRootStatus?> libraryRootStatus() async => LibraryRootStatus.available;
+  @override
+  Future<LibraryScanResult?> refreshLibrary({bool afterPending = false}) async {
+    scanCalls++;
+    return null;
+  }
+
+  @override
+  Future<bool> ensurePortableStateOnStartup() async => false;
+  @override
+  Future<LibraryRoot?> chooseLibraryRootCandidate() async {
+    chooseCalls++;
+    return const LibraryRoot(kind: LibraryRootKind.desktopPath, locator: '/second', displayName: 'Second folder');
+  }
+
+  @override
+  Future<PortableLibraryInspection> inspectPortableLibrary(LibraryRoot root) async =>
+      const PortableLibraryInspection(disposition: PortableLibraryDisposition.empty);
+  @override
+  Future<void> configureLibraryRoot(LibraryRoot root, {bool bootstrapPortableState = true}) async => this.root = root;
 }
 
-class _Secrets implements LibrarySecretStore {
-  final values = <String, String>{};
-  PlatformLibrarySecretStore? platform;
+class _Importer extends BookImportService {
+  _Importer(this.storage) : super(storage);
+  final _Storage storage;
+  bool failImport = false;
+  int pickCalls = 0;
+
   @override
-  Future<String?> read(String key) async => platform != null ? platform!.read(key) : values[key];
-  @override
-  Future<void> write(String key, String value) async {
-    if (platform != null) return platform!.write(key, value);
-    values[key] = value;
+  Future<BookRecord?> pickAndImport() async {
+    pickCalls++;
+    if (failImport) throw PlatformException(code: 'saf_permission', message: 'Java NullPointerException: private path');
+    final book = BookRecord(id: 'book', title: 'Imported book', fileName: 'book.txt', format: 'txt', sizeBytes: 13);
+    storage.manifest = storage.manifest.copyWith(books: [book]);
+    return book;
   }
 }
