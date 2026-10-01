@@ -261,6 +261,16 @@ void main() {
     expect(manifest.visibleBooks.map((book) => book.id), contains(newBook.id));
     expect(await File(p.join(library.path, 'deleted.epub')).exists(), isTrue);
     expect(await File(p.join(library.path, newBook.relativeLocation!)).exists(), isTrue);
+
+    // Explicit re-import must also restore a remotely deleted book whose
+    // physical file survived on this device (the deduplication branch).
+    final oldRevision = manifest.books.singleWhere((book) => book.id == deletedBook.id).metadataRevision;
+    final restored = await BookImportService(storage).importFile(firstSource);
+    expect(restored.isDeleted, isFalse);
+    expect(restored.metadataRevision.counter, greaterThan(oldRevision.counter));
+    expect(restored.tombstoneAckedByDeviceIds, isEmpty);
+    expect((await storage.loadManifest()).visibleBooks, hasLength(2));
+    expect(await library.list().where((entry) => entry is File).length, 2);
   });
 
   test(

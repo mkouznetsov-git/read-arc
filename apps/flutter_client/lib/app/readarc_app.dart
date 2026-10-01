@@ -50,12 +50,11 @@ const Color _raMutedPaper = Color(0xFFCFC5B5);
 const Color _raFaintIndigo = Color(0xFF4A405F);
 
 String _friendlyLibraryLoadError(Object error) => error is SecureStorageUnavailableException
-    ? 'Не удалось открыть защищённое хранилище ReadArc. Данные библиотеки сохранены; повторите запуск после переустановки или восстановите аккаунт через Recovery Key/подключённое устройство.'
+    ? 'Защищённые данные этой установки недоступны. Повторите попытку. Если ошибка сохраняется, переустановите ReadArc, затем выберите папку библиотеки и восстановите аккаунт через Recovery Key или доверенное устройство. Для восстановления понадобится сохранённый ключ или доступ к этому устройству.'
     : 'Не удалось загрузить библиотеку. Повторите попытку.';
 
 String _friendlyBookImportError(Object error) {
   if (error is UnsupportedError) return error.message?.toString() ?? 'Этот формат книги не поддерживается.';
-  if (error is FileSystemException && error.message.isNotEmpty) return error.message;
   return 'Не удалось прочитать выбранный файл. Проверьте доступ к нему и попробуйте выбрать файл ещё раз.';
 }
 
@@ -149,17 +148,18 @@ class _ReadArcAppState extends State<ReadArcApp> with WidgetsBindingObserver {
 enum _ExistingLibraryAction { pairing, recoveryKey, newAccount }
 
 class LibraryScreen extends StatefulWidget {
-  const LibraryScreen({super.key, required this.storage, required this.sync});
+  const LibraryScreen({super.key, required this.storage, required this.sync, this.importService});
 
   final StorageService storage;
   final SyncService sync;
+  final BookImportService? importService;
 
   @override
   State<LibraryScreen> createState() => _LibraryScreenState();
 }
 
 class _LibraryScreenState extends State<LibraryScreen> {
-  late final _importService = BookImportService(widget.storage);
+  late final _importService = widget.importService ?? BookImportService(widget.storage);
   LibraryManifest? _manifest;
   bool _busy = false;
   bool _bulkDownloadBusy = false;
@@ -592,13 +592,19 @@ class _LibraryScreenState extends State<LibraryScreen> {
         ],
       ),
       floatingActionButton: FloatingActionButton.extended(
-        onPressed: _busy || _libraryRoot == null || _libraryRootStatus != LibraryRootStatus.available ? null : _addBook,
+        onPressed:
+            _busy ||
+                _libraryLoadError != null ||
+                _libraryRoot == null ||
+                _libraryRootStatus != LibraryRootStatus.available
+            ? null
+            : _addBook,
         icon: _busy
             ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
             : const Icon(Icons.add_rounded),
         label: const Text('Добавить книгу'),
       ),
-      body: _libraryLoadError != null && manifest == null
+      body: _libraryLoadError != null
           ? _LibraryLoadErrorView(message: _libraryLoadError!, onRetry: _reload)
           : manifest == null
           ? const Center(child: CircularProgressIndicator())
@@ -721,7 +727,7 @@ class _EmptyLibrary extends StatelessWidget {
             ),
             const SizedBox(height: 8),
             const Text(
-              'Добавьте поддерживаемый файл или выберите другой LibraryRoot. Физические файлы в выбранной папке не удаляются автоматически.',
+              'Добавьте книгу или выберите другую папку библиотеки. При смене папки файлы в прежней папке сохранятся.',
               textAlign: TextAlign.center,
               style: TextStyle(color: _raMutedPaper),
             ),
