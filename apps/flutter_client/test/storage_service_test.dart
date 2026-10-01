@@ -1,11 +1,15 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:crypto/crypto.dart';
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:path/path.dart' as p;
 import 'package:readarc/models/book.dart';
+import 'package:readarc/models/manifest.dart';
+import 'package:readarc/models/sync_revision.dart';
 import 'package:readarc/services/library_repository.dart';
 import 'package:readarc/services/library_storage.dart';
 import 'package:readarc/services/book_import_service.dart';
@@ -91,6 +95,82 @@ void main() {
     expect((await restarted.refreshLibrary())?.books.single.id, imported.id);
   });
 
+  test('changing LibraryRoot leaves the previous user-owned files in place', () async {
+    final application = await Directory.systemTemp.createTemp('readarc-root-change-app-');
+    final firstRoot = await Directory.systemTemp.createTemp('readarc-root-change-first-');
+    final secondRoot = await Directory.systemTemp.createTemp('readarc-root-change-second-');
+    addTearDown(() async {
+      for (final directory in [application, firstRoot, secondRoot]) {
+        if (await directory.exists()) await directory.delete(recursive: true);
+      }
+    });
+    final storage = StorageService(
+      appDirectory: () async => application,
+      secretStore: _MemorySecretStore(),
+      libraryStorageProvider: LocalDirectoryLibraryStorageProvider(),
+    );
+    final oldRoot = LibraryRoot(kind: LibraryRootKind.desktopPath, locator: firstRoot.path, displayName: 'Old');
+    await storage.configureLibraryRoot(oldRoot);
+    final oldBook = File(p.join(firstRoot.path, 'kept.epub'))..writeAsStringSync('keep me', flush: true);
+    await storage.refreshLibrary(afterPending: true);
+
+    await storage.configureLibraryRoot(
+      LibraryRoot(kind: LibraryRootKind.desktopPath, locator: secondRoot.path, displayName: 'New'),
+    );
+
+    expect(await oldBook.exists(), isTrue);
+    expect(await oldBook.readAsString(), 'keep me');
+  });
+
+  test('Android picker selections without an absolute path import through the read stream/bytes fallback', () async {
+    final application = await Directory.systemTemp.createTemp('readarc-picker-fallback-app-');
+    final library = await Directory.systemTemp.createTemp('readarc-picker-fallback-root-');
+    addTearDown(() async {
+      for (final directory in [application, library]) {
+        if (await directory.exists()) await directory.delete(recursive: true);
+      }
+    });
+    final storage = StorageService(
+      appDirectory: () async => application,
+      secretStore: _MemorySecretStore(),
+      libraryStorageProvider: LocalDirectoryLibraryStorageProvider(),
+    );
+    await storage.configureLibraryRoot(
+      LibraryRoot(kind: LibraryRootKind.desktopPath, locator: library.path, displayName: 'Library'),
+    );
+    for (final streamed in [false, true]) {
+      final name = streamed ? 'streamed.epub' : 'bytes.epub';
+      final payload = Uint8List.fromList(utf8.encode('picked content: $name'));
+      final imported = await BookImportService(
+        storage,
+        pickBookFile: () async => PlatformFile(
+          name: name,
+          size: payload.length,
+          bytes: streamed ? null : payload,
+          readStream: streamed ? Stream<List<int>>.fromIterable([payload.sublist(0, 5), payload.sublist(5)]) : null,
+        ),
+      ).pickAndImport();
+      expect(imported, isNotNull);
+      expect(imported!.relativeLocation, name);
+      expect(await File(p.join(library.path, name)).readAsBytes(), payload);
+      expect(await Directory(p.join(application.path, 'import_staging')).list().toList(), isEmpty);
+    }
+    await expectLater(
+      BookImportService(
+        storage,
+        pickBookFile: () async => PlatformFile(
+          name: 'broken.epub',
+          size: 10,
+          readStream: Stream<List<int>>.error(const FileSystemException('provider read failed')),
+        ),
+      ).pickAndImport(),
+      throwsA(isA<FileSystemException>()),
+    );
+    expect(await File(p.join(library.path, 'broken.epub')).exists(), isFalse);
+    expect(await Directory(p.join(application.path, 'import_staging')).list().toList(), isEmpty);
+    await storage.dispose();
+  });
+
   test('same SHA import reuses the existing root file while filename collisions stay distinct', () async {
     final application = await Directory.systemTemp.createTemp('readarc-dedupe-app-');
     final library = await Directory.systemTemp.createTemp('readarc-dedupe-root-');
@@ -119,6 +199,175 @@ void main() {
     expect(second.relativeLocation, 'existing (2).epub');
     expect(await library.list().where((entity) => entity is File).length, 2);
   });
+
+  test('explicit same-SHA re-import resurrects an account deletion with a newer revision', () async {
+    final application = await Directory.systemTemp.createTemp('readarc-reimport-app-');
+    final library = await Directory.systemTemp.createTemp('readarc-reimport-root-');
+    final sources = await Directory.systemTemp.createTemp('readarc-reimport-source-');
+    addTearDown(() async {
+      for (final directory in [application, library, sources]) {
+        if (await directory.exists()) await directory.delete(recursive: true);
+      }
+    });
+    final storage = StorageService(
+      appDirectory: () async => application,
+      secretStore: _MemorySecretStore(),
+      libraryStorageProvider: LocalDirectoryLibraryStorageProvider(),
+    );
+    await storage.configureLibraryRoot(
+      LibraryRoot(kind: LibraryRootKind.desktopPath, locator: library.path, displayName: 'Library'),
+    );
+    final source = File(p.join(sources.path, 'original.epub'))..writeAsStringSync('same SHA content', flush: true);
+    final first = await BookImportService(storage).importFile(source);
+    await storage.deleteBookFromLibrary(first.id);
+    final deleted = (await storage.loadManifest()).books.singleWhere((book) => book.id == first.id);
+    expect(deleted.isDeleted, isTrue);
+    expect(await File(p.join(library.path, first.relativeLocation!)).exists(), isFalse);
+
+    final reimport = File(p.join(sources.path, 'restored.epub'))..writeAsStringSync('same SHA content', flush: true);
+    final restored = await BookImportService(storage).importFile(reimport);
+    final current = (await storage.loadManifest()).books.singleWhere((book) => book.id == first.id);
+
+    expect(restored.id, first.id);
+    expect(current.isDeleted, isFalse);
+    expect(current.metadataRevision.counter, greaterThan(deleted.metadataRevision.counter));
+    expect((await storage.loadManifest()).visibleBooks.single.id, first.id);
+    expect(await File(p.join(library.path, current.relativeLocation!)).exists(), isTrue);
+  });
+
+  test('a different new SHA remains visible when another book has a remote tombstone', () async {
+    final application = await Directory.systemTemp.createTemp('readarc-new-sha-tombstone-app-');
+    final library = await Directory.systemTemp.createTemp('readarc-new-sha-tombstone-root-');
+    final sources = await Directory.systemTemp.createTemp('readarc-new-sha-tombstone-source-');
+    addTearDown(() async {
+      for (final directory in [application, library, sources]) {
+        if (await directory.exists()) await directory.delete(recursive: true);
+      }
+    });
+    final storage = StorageService(
+      appDirectory: () async => application,
+      secretStore: _MemorySecretStore(),
+      libraryStorageProvider: LocalDirectoryLibraryStorageProvider(),
+    );
+    await storage.configureLibraryRoot(
+      LibraryRoot(kind: LibraryRootKind.desktopPath, locator: library.path, displayName: 'Library'),
+    );
+    final firstSource = File(p.join(sources.path, 'deleted.epub'))..writeAsStringSync('deleted remotely', flush: true);
+    final deletedBook = await BookImportService(storage).importFile(firstSource);
+    await storage.mutateManifest((manifest) {
+      final revision = SyncRevision(counter: manifest.logicalClock + 1, deviceId: 'remote-mac');
+      return manifest.copyWith(
+        books: manifest.books
+            .map(
+              (book) => book.id == deletedBook.id
+                  ? book.copyWith(
+                      deletedAt: DateTime.utc(2026),
+                      metadataRevision: revision,
+                      updatedByDeviceId: 'remote-mac',
+                      availableOnDeviceIds: const [],
+                      tombstoneAckedByDeviceIds: const [],
+                    )
+                  : book,
+            )
+            .toList(),
+        logicalClock: revision.counter,
+      );
+    });
+
+    final newSource = File(p.join(sources.path, 'new.epub'))..writeAsStringSync('brand new SHA', flush: true);
+    final newBook = await BookImportService(storage).importFile(newSource);
+    final manifest = await storage.loadManifest();
+
+    expect(manifest.books.singleWhere((book) => book.id == deletedBook.id).isDeleted, isTrue);
+    expect(manifest.visibleBooks.map((book) => book.id), contains(newBook.id));
+    expect(await File(p.join(library.path, 'deleted.epub')).exists(), isTrue);
+    expect(await File(p.join(library.path, newBook.relativeLocation!)).exists(), isTrue);
+
+    // Explicit re-import must also restore a remotely deleted book whose
+    // physical file survived on this device (the deduplication branch).
+    final oldRevision = manifest.books.singleWhere((book) => book.id == deletedBook.id).metadataRevision;
+    final restored = await BookImportService(storage).importFile(firstSource);
+    expect(restored.isDeleted, isFalse);
+    expect(restored.metadataRevision.counter, greaterThan(oldRevision.counter));
+    expect(restored.tombstoneAckedByDeviceIds, isEmpty);
+    expect((await storage.loadManifest()).visibleBooks, hasLength(2));
+    expect(await library.list().where((entry) => entry is File).length, 2);
+  });
+
+  test(
+    'authenticated pairing drops old-account tombstones but preserves installation identity and physical files',
+    () async {
+      final application = await Directory.systemTemp.createTemp('readarc-pairing-boundary-app-');
+      final library = await Directory.systemTemp.createTemp('readarc-pairing-boundary-root-');
+      addTearDown(() async {
+        for (final directory in [application, library]) {
+          if (await directory.exists()) await directory.delete(recursive: true);
+        }
+      });
+      final bytes = utf8.encode('physically present after pairing');
+      final bookId = sha256.convert(bytes).toString();
+      await File(p.join(library.path, 'physical.epub')).writeAsBytes(bytes, flush: true);
+      final storage = StorageService(
+        appDirectory: () async => application,
+        secretStore: _MemorySecretStore(),
+        libraryStorageProvider: LocalDirectoryLibraryStorageProvider(),
+      );
+      await storage.configureLibraryRoot(
+        LibraryRoot(kind: LibraryRootKind.desktopPath, locator: library.path, displayName: 'Library'),
+        bootstrapPortableState: false,
+      );
+      final installation = await storage.loadManifest();
+      final oldAccountKey = base64UrlEncode(Uint8List(32)).replaceAll('=', '');
+      final pairedAccountKey = base64UrlEncode(Uint8List.fromList(List<int>.generate(32, (index) => index + 1)))
+          .replaceAll('=', '');
+      await storage.mutateManifest(
+        (current) => current.copyWith(
+          accountId: 'old-account',
+          accountEncryptionKey: oldAccountKey,
+          logicalClock: 500,
+          appliedOperationIds: const ['old-account-operation'],
+          trustedDevices: [
+            TrustedDeviceRecord(deviceId: 'old-owner', name: 'Old owner', role: 'owner', publicKey: 'old-public'),
+          ],
+          books: [
+            BookRecord(
+              id: bookId,
+              title: 'Stale deletion',
+              fileName: 'physical.epub',
+              format: 'epub',
+              sizeBytes: bytes.length,
+              contentSha256: bookId,
+              deletedAt: DateTime.utc(2035),
+              metadataRevision: const SyncRevision(counter: 500, deviceId: 'old-owner'),
+            ),
+          ],
+        ),
+      );
+
+      await storage.replaceAccountFromPairing(
+        accountId: 'paired-account',
+        accountEncryptionKey: pairedAccountKey,
+        ownerDeviceId: 'android-owner',
+        ownerDeviceName: 'Android',
+        ownerDevicePublicKey: 'android-public',
+      );
+      final paired = await storage.recoverPortableStateAfterPairing();
+
+      expect(paired.accountId, 'paired-account');
+      expect(paired.deviceId, installation.deviceId);
+      expect(paired.deviceSigningPrivateKey, installation.deviceSigningPrivateKey);
+      expect(paired.appliedOperationIds, isNot(contains('old-account-operation')));
+      expect(paired.logicalClock, lessThan(500));
+      expect(
+        paired.trustedDevices.map((device) => device.deviceId),
+        containsAll(['android-owner', installation.deviceId]),
+      );
+      expect(paired.trustedDevices.map((device) => device.deviceId), isNot(contains('old-owner')));
+      expect(paired.visibleBooks.single.id, bookId);
+      expect(paired.visibleBooks.single.isDeleted, isFalse);
+      expect(paired.visibleBooks.single.relativeLocation, 'physical.epub');
+    },
+  );
 
   test('unavailable or interrupted full scan never reconciles as mass deletion', () async {
     final application = await Directory.systemTemp.createTemp('readarc-unavailable-app-');
@@ -286,6 +535,67 @@ void main() {
     }
   });
 
+  test('recovery-required root stays portable-write-suppressed until an account choice succeeds', () async {
+    final application = await Directory.systemTemp.createTemp('readarc-recovery-pending-app-');
+    final library = await Directory.systemTemp.createTemp('readarc-recovery-pending-root-');
+    addTearDown(() async {
+      for (final directory in [application, library]) {
+        if (await directory.exists()) await directory.delete(recursive: true);
+      }
+    });
+    final storage = StorageService(
+      appDirectory: () async => application,
+      secretStore: _MemorySecretStore(),
+      libraryStorageProvider: LocalDirectoryLibraryStorageProvider(),
+    );
+    final manifest = await storage.loadManifest();
+    final root = LibraryRoot(kind: LibraryRootKind.desktopPath, locator: library.path, displayName: 'Library');
+
+    await storage.configureLibraryRoot(root, bootstrapPortableState: false);
+    await storage.mutateManifest((current) => current.copyWith(logicalClock: current.logicalClock + 1));
+    await storage.flushPortableState();
+    await expectLater(storage.createRecoveryKey(), throwsStateError);
+    await storage.dispose();
+
+    final current = File(p.join(library.path, '.readarc', 'state', manifest.deviceId, 'current'));
+    expect(await current.exists(), isFalse, reason: 'pairing cancellation/background must not publish a fresh account');
+
+    await storage.startNewAccountForPortableLibrary();
+    expect(await current.exists(), isTrue, reason: 'an explicit new-account choice enables portable writes');
+  });
+
+  test('read-only root rejects portable publish without replacing current generation', () async {
+    final application = await Directory.systemTemp.createTemp('readarc-read-only-app-');
+    final library = await Directory.systemTemp.createTemp('readarc-read-only-root-');
+    addTearDown(() async {
+      for (final directory in [application, library]) {
+        if (await directory.exists()) await directory.delete(recursive: true);
+      }
+    });
+    final provider = _ToggleProvider(LocalDirectoryLibraryStorageProvider());
+    final storage = StorageService(
+      appDirectory: () async => application,
+      secretStore: _MemorySecretStore(),
+      libraryStorageProvider: provider,
+    );
+    final root = LibraryRoot(kind: LibraryRootKind.desktopPath, locator: library.path, displayName: 'Library');
+    await storage.configureLibraryRoot(root);
+    final deviceId = (await storage.loadManifest()).deviceId;
+    final current = File(p.join(library.path, '.readarc', 'state', deviceId, 'current'));
+    final before = await current.readAsBytes();
+
+    provider.failServiceWrites = true;
+    await storage.mutateManifest((manifest) => manifest.copyWith(logicalClock: manifest.logicalClock + 1));
+    await expectLater(
+      storage.flushPortableState(),
+      throwsA(
+        isA<LibraryRootAccessException>().having((error) => error.status, 'status', LibraryRootStatus.permissionLost),
+      ),
+    );
+
+    expect(await current.readAsBytes(), before);
+  });
+
   test('verified transfer destination is committed to user root and incoming cache is removed', () async {
     final application = await Directory.systemTemp.createTemp('readarc-transfer-app-');
     final library = await Directory.systemTemp.createTemp('readarc-transfer-root-');
@@ -341,6 +651,7 @@ class _ToggleProvider implements LibraryStorageProvider {
   final LibraryStorageProvider delegate;
   LibraryRootStatus rootStatus = LibraryRootStatus.available;
   bool failListing = false;
+  bool failServiceWrites = false;
 
   @override
   Future<LibraryRoot?> chooseRoot() => delegate.chooseRoot();
@@ -369,4 +680,22 @@ class _ToggleProvider implements LibraryStorageProvider {
   Future<void> deleteEntry(LibraryRoot root, String relativeLocation) => delegate.deleteEntry(root, relativeLocation);
   @override
   Future<bool> containsFile(LibraryRoot root, File source) => delegate.containsFile(root, source);
+  @override
+  Future<Uint8List?> readServiceFile(LibraryRoot root, String relativeLocation) =>
+      delegate.readServiceFile(root, relativeLocation);
+  @override
+  Future<List<String>> listServiceFiles(LibraryRoot root, String relativeDirectory) =>
+      delegate.listServiceFiles(root, relativeDirectory);
+  @override
+  Future<void> publishServiceFile(
+    LibraryRoot root,
+    String relativeLocation,
+    Uint8List bytes, {
+    bool preservePrevious = true,
+  }) {
+    if (failServiceWrites) {
+      throw const LibraryRootAccessException(LibraryRootStatus.permissionLost, 'read-only root');
+    }
+    return delegate.publishServiceFile(root, relativeLocation, bytes, preservePrevious: preservePrevious);
+  }
 }

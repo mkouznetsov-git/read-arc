@@ -5,6 +5,9 @@
     <application
         android:label="ReadArc"
         android:name="${applicationName}"
+        android:allowBackup="false"
+        android:fullBackupContent="@xml/backup_rules_legacy"
+        android:dataExtractionRules="@xml/backup_rules"
         android:usesCleartextTraffic="false"
         android:icon="@mipmap/ic_launcher">
         <activity

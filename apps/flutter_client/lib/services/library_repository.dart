@@ -15,6 +15,22 @@ abstract interface class LibrarySecretStore {
   Future<void> write(String key, String value);
 }
 
+/// Raised when Android/iOS/macOS rejects access to the encrypted secret store.
+///
+/// This is deliberately separate from manifest corruption: quarantining a
+/// valid manifest while a platform keystore is unavailable can turn a
+/// recoverable reinstall into an accidental identity reset. Callers should
+/// keep the on-disk state intact and present the Recovery Key/pairing path.
+class SecureStorageUnavailableException implements IOException {
+  const SecureStorageUnavailableException([this.cause]) : message = 'Secure storage unavailable';
+
+  final Object? cause;
+  final String message;
+
+  @override
+  String toString() => 'SecureStorageUnavailableException';
+}
+
 class PlatformLibrarySecretStore implements LibrarySecretStore {
   PlatformLibrarySecretStore([FlutterSecureStorage? storage])
     : _storage =
@@ -38,10 +54,22 @@ class PlatformLibrarySecretStore implements LibrarySecretStore {
   final FlutterSecureStorage _storage;
 
   @override
-  Future<String?> read(String key) => _storage.read(key: key);
+  Future<String?> read(String key) async {
+    try {
+      return await _storage.read(key: key);
+    } catch (error) {
+      throw SecureStorageUnavailableException(error);
+    }
+  }
 
   @override
-  Future<void> write(String key, String value) => _storage.write(key: key, value: value);
+  Future<void> write(String key, String value) async {
+    try {
+      await _storage.write(key: key, value: value);
+    } catch (error) {
+      throw SecureStorageUnavailableException(error);
+    }
+  }
 }
 
 class ManifestRecoveryException implements IOException {
@@ -117,6 +145,46 @@ class LibraryRepository {
 
   Future<LibraryManifest> replace(LibraryManifest replacement) => mutate((_) => replacement);
 
+  /// Commits authenticated account recovery while preserving the installation
+  /// identity that was generated in the new sandbox. The ordinary destructive
+  /// replacement guard intentionally remains strict for every other caller.
+  Future<LibraryManifest> replaceAfterAuthenticatedRecovery(LibraryManifest replacement) => _serialized(() async {
+    final current = await _readOrCreate();
+    if (replacement.deviceId != current.deviceId ||
+        replacement.deviceSigningPublicKey != current.deviceSigningPublicKey ||
+        replacement.deviceSigningPrivateKey != current.deviceSigningPrivateKey) {
+      throw StateError('Recovery attempted to replace installation device identity');
+    }
+    if (replacement.accountId.trim().isEmpty || replacement.accountEncryptionKey.trim().isEmpty) {
+      throw StateError('Recovered account identity is incomplete');
+    }
+    final updated = _normalize(replacement);
+    await _writeVerified(updated, previous: current);
+    return updated;
+  });
+
+  /// Commits an account transition authorized by a one-time pairing claim.
+  ///
+  /// Account-scoped metadata from the installation's previous account must not
+  /// cross this boundary. In particular, carrying old Lamport revisions or
+  /// deletion tombstones into the claimed account can hide that account's
+  /// physical books as soon as the first snapshot is exchanged. Device identity
+  /// is installation-scoped, so it is deliberately preserved and verified.
+  Future<LibraryManifest> replaceAfterAuthenticatedPairing(LibraryManifest replacement) => _serialized(() async {
+    final current = await _readOrCreate();
+    if (replacement.deviceId != current.deviceId ||
+        replacement.deviceSigningPublicKey != current.deviceSigningPublicKey ||
+        replacement.deviceSigningPrivateKey != current.deviceSigningPrivateKey) {
+      throw StateError('Pairing attempted to replace installation device identity');
+    }
+    if (replacement.accountId.trim().isEmpty || replacement.accountEncryptionKey.trim().isEmpty) {
+      throw StateError('Paired account identity is incomplete');
+    }
+    final updated = _normalize(replacement);
+    await _writeVerified(updated, previous: current);
+    return updated;
+  });
+
   Future<File> get manifestFile async => File(p.join((await _appDirectory()).path, 'manifest.json'));
 
   Future<LibraryManifest> _readOrCreate() async {
@@ -136,6 +204,10 @@ class LibraryRepository {
         await _writeVerified(hydrated, previous: decoded);
       }
       return hydrated;
+    } on SecureStorageUnavailableException {
+      // The manifest is still valid. Preserve it verbatim so the user can
+      // recover through a fresh installation, Recovery Key, or pairing.
+      rethrow;
     } catch (error) {
       await _quarantine(file, error);
       final recovered = await _recoverFromCandidates(file);

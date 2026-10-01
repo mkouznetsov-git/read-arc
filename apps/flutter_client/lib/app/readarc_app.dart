@@ -16,6 +16,7 @@ import 'package:pdfx/pdfx.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 import 'package:url_launcher/url_launcher.dart';
 
+import '../build_identity.dart';
 import '../models/book.dart';
 import '../models/manifest.dart';
 import '../models/sync_settings.dart';
@@ -23,8 +24,10 @@ import '../reader/reader_exit_checkpoint.dart';
 import '../services/book_import_service.dart';
 import '../services/format_engines/djvu_embedded_engine.dart';
 import '../services/format_engines/djvu_embedded_probe.dart';
+import '../services/library_repository.dart';
 import '../services/storage_service.dart';
 import '../services/library_storage.dart';
+import '../services/portable_library_state.dart';
 import '../services/sync/sync_service.dart';
 import '../ui/app_theme.dart';
 
@@ -45,6 +48,15 @@ const Color _raPaper = Color(0xFFF3E7CF);
 const Color _raInkBlue = Color(0xFF2A2F4A);
 const Color _raMutedPaper = Color(0xFFCFC5B5);
 const Color _raFaintIndigo = Color(0xFF4A405F);
+
+String _friendlyLibraryLoadError(Object error) => error is SecureStorageUnavailableException
+    ? 'Защищённые данные этой установки недоступны. Повторите попытку. Если ошибка сохраняется, переустановите ReadArc, затем выберите папку библиотеки и восстановите аккаунт через Recovery Key или доверенное устройство. Для восстановления понадобится сохранённый ключ или доступ к этому устройству.'
+    : 'Не удалось загрузить библиотеку. Повторите попытку.';
+
+String _friendlyBookImportError(Object error) {
+  if (error is UnsupportedError) return error.message?.toString() ?? 'Этот формат книги не поддерживается.';
+  return 'Не удалось прочитать выбранный файл. Проверьте доступ к нему и попробуйте выбрать файл ещё раз.';
+}
 
 void runReadArcApp() {
   runZonedGuarded(
@@ -79,14 +91,24 @@ class ReadArcApp extends StatefulWidget {
   State<ReadArcApp> createState() => _ReadArcAppState();
 }
 
-class _ReadArcAppState extends State<ReadArcApp> {
+class _ReadArcAppState extends State<ReadArcApp> with WidgetsBindingObserver {
   late final _storage = widget.storage ?? StorageService();
   late final _sync = widget.sync ?? SyncService(_storage);
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     if (widget.autoConnect) unawaited(_autoConnectSync());
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.inactive ||
+        state == AppLifecycleState.paused ||
+        state == AppLifecycleState.detached) {
+      unawaited(_storage.flushPortableState().catchError((_) {}));
+    }
   }
 
   Future<void> _autoConnectSync() async {
@@ -106,6 +128,8 @@ class _ReadArcAppState extends State<ReadArcApp> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    unawaited(_storage.dispose().catchError((_) {}));
     if (widget.disposeSync) unawaited(_sync.dispose());
     super.dispose();
   }
@@ -121,18 +145,21 @@ class _ReadArcAppState extends State<ReadArcApp> {
   }
 }
 
+enum _ExistingLibraryAction { pairing, recoveryKey, newAccount }
+
 class LibraryScreen extends StatefulWidget {
-  const LibraryScreen({super.key, required this.storage, required this.sync});
+  const LibraryScreen({super.key, required this.storage, required this.sync, this.importService});
 
   final StorageService storage;
   final SyncService sync;
+  final BookImportService? importService;
 
   @override
   State<LibraryScreen> createState() => _LibraryScreenState();
 }
 
 class _LibraryScreenState extends State<LibraryScreen> {
-  late final _importService = BookImportService(widget.storage);
+  late final _importService = widget.importService ?? BookImportService(widget.storage);
   LibraryManifest? _manifest;
   bool _busy = false;
   bool _bulkDownloadBusy = false;
@@ -140,6 +167,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
   LibraryRoot? _libraryRoot;
   LibraryRootStatus? _libraryRootStatus;
   StreamSubscription<LibraryManifest>? _syncSubscription;
+  bool _recoverySuggestionShown = false;
 
   @override
   void initState() {
@@ -174,6 +202,28 @@ class _LibraryScreenState extends State<LibraryScreen> {
           if (manifest.logicalClock > clockBeforeScan && widget.sync.state.value.connected) {
             unawaited(widget.sync.broadcastLibrarySnapshot(reason: 'library_scan'));
           }
+          final suggestRecoveryKey = await widget.storage.ensurePortableStateOnStartup();
+          manifest = await widget.storage.loadManifest();
+          loadedManifest = manifest;
+          if (suggestRecoveryKey && !_recoverySuggestionShown && mounted) {
+            _recoverySuggestionShown = true;
+            WidgetsBinding.instance.addPostFrameCallback((_) {
+              if (!mounted) return;
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(
+                  content: const Text('Создайте Recovery Key на случай потери всех устройств.'),
+                  action: SnackBarAction(
+                    label: 'Открыть',
+                    onPressed: () => Navigator.of(context).push(
+                      MaterialPageRoute(
+                        builder: (_) => SyncScreen(storage: widget.storage, sync: widget.sync),
+                      ),
+                    ),
+                  ),
+                ),
+              );
+            });
+          }
         }
       }
       if (mounted) {
@@ -196,15 +246,122 @@ class _LibraryScreenState extends State<LibraryScreen> {
     } catch (error, stackTrace) {
       debugPrint('ReadArc manifest load failed: $error\n$stackTrace');
       if (!mounted) return;
-      setState(() => _libraryLoadError = 'Не удалось загрузить библиотеку: $error');
+      setState(() => _libraryLoadError = _friendlyLibraryLoadError(error));
     }
   }
+
+  Future<_ExistingLibraryAction?> _chooseExistingLibraryAction(PortableLibraryInspection inspection) =>
+      showDialog<_ExistingLibraryAction>(
+        context: context,
+        barrierDismissible: false,
+        builder: (context) => AlertDialog(
+          title: const Text('Восстановить существующий аккаунт ReadArc'),
+          content: Text(
+            'В выбранной библиотеке найдено переносимое состояние ReadArc.\n\n'
+            'Recovery Key нужен, если больше не осталось ни одного '
+            'подключённого устройства.'
+            "${inspection.accountIds.isEmpty ? '' : '\n\nАккаунт: ${inspection.accountIds.join(', ')}'}",
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.of(context).pop(), child: const Text('Отмена')),
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(_ExistingLibraryAction.newAccount),
+              child: const Text('Начать как новый аккаунт'),
+            ),
+            OutlinedButton(
+              onPressed: () => Navigator.of(context).pop(_ExistingLibraryAction.recoveryKey),
+              child: const Text('Использовать Recovery Key'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.of(context).pop(_ExistingLibraryAction.pairing),
+              child: const Text('Подключить другое устройство'),
+            ),
+          ],
+        ),
+      );
+
+  Future<String?> _requestRecoveryKey() async {
+    final controller = TextEditingController();
+    final value = await showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Recovery Key'),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          autocorrect: false,
+          enableSuggestions: false,
+          decoration: const InputDecoration(labelText: 'Введите сохранённый Recovery Key'),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.of(context).pop(), child: const Text('Отмена')),
+          FilledButton(onPressed: () => Navigator.of(context).pop(controller.text), child: const Text('Восстановить')),
+        ],
+      ),
+    );
+    controller.dispose();
+    return value?.trim();
+  }
+
+  Future<bool> _confirmNewAccount() async =>
+      await showDialog<bool>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text('Начать как новый аккаунт?'),
+          content: const Text(
+            'Книги останутся в выбранной папке, но старые зашифрованные '
+            'progress и bookmarks без Recovery Key или доверенного устройства '
+            'восстановить невозможно. Каталог .readarc удалён не будет.',
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.of(context).pop(false), child: const Text('Назад')),
+            FilledButton(onPressed: () => Navigator.of(context).pop(true), child: const Text('Создать новый аккаунт')),
+          ],
+        ),
+      ) ??
+      false;
 
   Future<void> _chooseLibraryRoot() async {
     setState(() => _busy = true);
     try {
-      final root = await widget.storage.chooseAndConfigureLibrary();
-      if (root != null) await _reload();
+      final root = await widget.storage.chooseLibraryRootCandidate();
+      if (root == null) return;
+      final inspection = await widget.storage.inspectPortableLibrary(root);
+      switch (inspection.disposition) {
+        case PortableLibraryDisposition.empty:
+          await widget.storage.configureLibraryRoot(root);
+          break;
+        case PortableLibraryDisposition.currentAccount:
+          await widget.storage.configureLibraryRoot(root, bootstrapPortableState: false);
+          await widget.storage.recoverPortableStateAfterPairing();
+          break;
+        case PortableLibraryDisposition.recoveryRequired:
+          if (!mounted) return;
+          final action = await _chooseExistingLibraryAction(inspection);
+          if (action == null) return;
+          if (action == _ExistingLibraryAction.newAccount) {
+            if (!await _confirmNewAccount()) return;
+            await widget.storage.configureLibraryRoot(root);
+          } else if (action == _ExistingLibraryAction.recoveryKey) {
+            final key = await _requestRecoveryKey();
+            if (key == null || key.isEmpty) return;
+            await widget.storage.configureLibraryRoot(root, bootstrapPortableState: false);
+            await widget.storage.recoverWithRecoveryKey(key);
+          } else {
+            await widget.storage.configureLibraryRoot(root, bootstrapPortableState: false);
+            if (!mounted) return;
+            await Navigator.of(context).push(
+              MaterialPageRoute(
+                builder: (_) => SyncScreen(storage: widget.storage, sync: widget.sync),
+              ),
+            );
+          }
+          break;
+        case PortableLibraryDisposition.incomplete:
+        case PortableLibraryDisposition.unsupported:
+          throw PortableStateException(inspection.message ?? 'Portable state нельзя безопасно открыть');
+      }
+      await _reload();
     } catch (error) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Не удалось открыть библиотеку: $error')));
@@ -223,7 +380,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
       await _reload();
     } catch (error) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Не удалось добавить книгу: $error')));
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(_friendlyBookImportError(error))));
     } finally {
       if (mounted) setState(() => _busy = false);
     }
@@ -435,13 +592,19 @@ class _LibraryScreenState extends State<LibraryScreen> {
         ],
       ),
       floatingActionButton: FloatingActionButton.extended(
-        onPressed: _busy || _libraryRoot == null || _libraryRootStatus != LibraryRootStatus.available ? null : _addBook,
+        onPressed:
+            _busy ||
+                _libraryLoadError != null ||
+                _libraryRoot == null ||
+                _libraryRootStatus != LibraryRootStatus.available
+            ? null
+            : _addBook,
         icon: _busy
             ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
             : const Icon(Icons.add_rounded),
         label: const Text('Добавить книгу'),
       ),
-      body: _libraryLoadError != null && manifest == null
+      body: _libraryLoadError != null
           ? _LibraryLoadErrorView(message: _libraryLoadError!, onRetry: _reload)
           : manifest == null
           ? const Center(child: CircularProgressIndicator())
@@ -454,7 +617,7 @@ class _LibraryScreenState extends State<LibraryScreen> {
           : _libraryRoot == null
           ? _LibraryRootSetupView(onChoose: _chooseLibraryRoot, busy: _busy)
           : books.isEmpty
-          ? const _EmptyLibrary()
+          ? _EmptyLibrary(root: _libraryRoot!, busy: _busy, onAddBook: _addBook, onChooseAgain: _chooseLibraryRoot)
           : ValueListenableBuilder<SyncStateSnapshot>(
               valueListenable: widget.sync.state,
               builder: (context, syncState, _) {
@@ -534,16 +697,59 @@ class _LibraryLoadErrorView extends StatelessWidget {
 }
 
 class _EmptyLibrary extends StatelessWidget {
-  const _EmptyLibrary();
+  const _EmptyLibrary({required this.root, required this.busy, required this.onAddBook, required this.onChooseAgain});
+
+  final LibraryRoot root;
+  final bool busy;
+  final Future<void> Function() onAddBook;
+  final Future<void> Function() onChooseAgain;
 
   @override
   Widget build(BuildContext context) {
-    return const Center(
-      child: Padding(
-        padding: EdgeInsets.all(32),
-        child: Text(
-          'В выбранной папке пока нет поддерживаемых книг. Добавьте файл через ReadArc или файловый менеджер.',
-          textAlign: TextAlign.center,
+    return Center(
+      child: SingleChildScrollView(
+        padding: const EdgeInsets.all(28),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(Icons.library_books_outlined, size: 54, color: _raWarmGold),
+            const SizedBox(height: 16),
+            const Text(
+              'В выбранной библиотеке пока нет книг',
+              textAlign: TextAlign.center,
+              style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700),
+            ),
+            const SizedBox(height: 10),
+            Text(
+              'Папка: ${root.displayName}',
+              textAlign: TextAlign.center,
+              style: const TextStyle(color: _raMutedPaper),
+            ),
+            const SizedBox(height: 8),
+            const Text(
+              'Добавьте книгу или выберите другую папку библиотеки. При смене папки файлы в прежней папке сохранятся.',
+              textAlign: TextAlign.center,
+              style: TextStyle(color: _raMutedPaper),
+            ),
+            const SizedBox(height: 22),
+            Wrap(
+              alignment: WrapAlignment.center,
+              spacing: 12,
+              runSpacing: 12,
+              children: [
+                FilledButton.icon(
+                  onPressed: busy ? null : () => unawaited(onAddBook()),
+                  icon: const Icon(Icons.add_rounded),
+                  label: const Text('Добавить книгу'),
+                ),
+                OutlinedButton.icon(
+                  onPressed: busy ? null : () => unawaited(onChooseAgain()),
+                  icon: const Icon(Icons.folder_open_outlined),
+                  label: const Text('Сменить папку'),
+                ),
+              ],
+            ),
+          ],
         ),
       ),
     );
@@ -1172,6 +1378,7 @@ class _TxtReaderScreenState extends State<_TxtReaderScreen> {
     final locator = _currentLocator() ?? _lastKnownLocator;
     if (locator == null) return;
     await _saveProgress(locator);
+    await widget.storage.flushPortableState();
     _exitProgressCommitted = true;
   }
 
@@ -1481,6 +1688,7 @@ class _DocxReaderScreenState extends State<_DocxReaderScreen> {
     _saveDebounce?.cancel();
     if (_document == null) return;
     await _saveProgress(_currentProgress());
+    await widget.storage.flushPortableState();
     _exitProgressCommitted = true;
   }
 
@@ -2747,6 +2955,7 @@ class _Fb2ReaderScreenState extends State<_Fb2ReaderScreen> {
     final locator = _currentLocator() ?? _lastKnownLocator;
     if (locator == null) return;
     await _saveProgress(locator);
+    await widget.storage.flushPortableState();
     _exitProgressCommitted = true;
   }
 
@@ -5401,6 +5610,7 @@ class _DjvuReaderScreenState extends State<_DjvuReaderScreen> {
     _saveDebounce?.cancel();
     if (_pageCount <= 0) return;
     await _savePage(_page);
+    await widget.storage.flushPortableState();
     _exitProgressCommitted = true;
   }
 
@@ -6255,6 +6465,7 @@ class _PdfReaderScreenState extends State<_PdfReaderScreen> {
     _saveDebounce?.cancel();
     if (_pages <= 0) return;
     await _savePage(_page);
+    await widget.storage.flushPortableState();
     _exitProgressCommitted = true;
   }
 
@@ -8398,6 +8609,88 @@ class _SyncScreenState extends State<SyncScreen> {
     ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Аккаунт скопирован')));
   }
 
+  Future<void> _createOrRotateRecoveryKey({required bool rotate}) async {
+    if (rotate) {
+      final confirmed = await showDialog<bool>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text('Создать новый Recovery Key?'),
+          content: const Text(
+            'До подтверждения новый ключ остаётся pending, а старый '
+            'продолжает работать. После подтверждения старый Recovery Key '
+            'будет отозван.',
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.of(context).pop(false), child: const Text('Отмена')),
+            FilledButton(onPressed: () => Navigator.of(context).pop(true), child: const Text('Продолжить')),
+          ],
+        ),
+      );
+      if (confirmed != true) return;
+    }
+    setState(() => _busy = true);
+    try {
+      final material = await widget.storage.createRecoveryKey();
+      final verified = await widget.storage.verifyRecoveryKey(material.displayKey, includePending: true);
+      if (!verified) {
+        throw StateError('Созданный Recovery Key не прошёл проверку');
+      }
+      if (!mounted) return;
+      var saved = false;
+      await showDialog<void>(
+        context: context,
+        barrierDismissible: false,
+        builder: (context) => StatefulBuilder(
+          builder: (context, setDialogState) => AlertDialog(
+            title: const Text('Сохраните Recovery Key'),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  'Recovery Key нужен для восстановления ReadArc, если '
+                  'больше не останется ни одного подключённого устройства.',
+                ),
+                const SizedBox(height: 16),
+                SelectableText(
+                  material.displayKey,
+                  style: const TextStyle(fontFamily: 'monospace', fontWeight: FontWeight.w700),
+                ),
+                const SizedBox(height: 12),
+                OutlinedButton.icon(
+                  onPressed: () async {
+                    await Clipboard.setData(ClipboardData(text: material.displayKey));
+                  },
+                  icon: const Icon(Icons.copy_rounded),
+                  label: const Text('Скопировать'),
+                ),
+                CheckboxListTile(
+                  contentPadding: EdgeInsets.zero,
+                  value: saved,
+                  onChanged: (value) => setDialogState(() => saved = value ?? false),
+                  title: const Text('Я сохранил Recovery Key'),
+                  controlAffinity: ListTileControlAffinity.leading,
+                ),
+              ],
+            ),
+            actions: [
+              FilledButton(onPressed: saved ? () => Navigator.of(context).pop() : null, child: const Text('Готово')),
+            ],
+          ),
+        ),
+      );
+      await widget.storage.confirmRecoveryKey(material.displayKey);
+      if (!await widget.storage.verifyRecoveryKey(material.displayKey)) {
+        throw StateError('Подтверждённый Recovery Key не прошёл проверку');
+      }
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Не удалось создать Recovery Key: $error')));
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
   Future<void> _revokeTrustedDevice(TrustedDeviceRecord device) async {
     final manifest = _manifest;
     if (manifest == null) return;
@@ -8477,6 +8770,8 @@ class _SyncScreenState extends State<SyncScreen> {
                       ],
                     ),
                     const SizedBox(height: 12),
+                    const Text('Версия: ${BuildIdentity.display}'),
+                    const SizedBox(height: 6),
                     Text('Статус подключения: ${syncState.statusText}'),
                     if (manifest.isCurrentDeviceRevoked) ...[
                       const SizedBox(height: 10),
@@ -8585,6 +8880,37 @@ class _SyncScreenState extends State<SyncScreen> {
                         ),
                       ),
                     ],
+                  ],
+                ),
+              ),
+              _SectionCard(
+                title: 'Восстановление',
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text(
+                      'Recovery Key нужен для восстановления ReadArc, если '
+                      'больше не останется ни одного подключённого устройства. '
+                      'Он не отправляется на relay и не сохраняется открытым '
+                      'текстом в библиотеке.',
+                    ),
+                    const SizedBox(height: 12),
+                    Wrap(
+                      spacing: 12,
+                      runSpacing: 8,
+                      children: [
+                        FilledButton.icon(
+                          onPressed: _busy ? null : () => _createOrRotateRecoveryKey(rotate: false),
+                          icon: const Icon(Icons.key_rounded),
+                          label: const Text('Создать Recovery Key'),
+                        ),
+                        OutlinedButton.icon(
+                          onPressed: _busy ? null : () => _createOrRotateRecoveryKey(rotate: true),
+                          icon: const Icon(Icons.sync_lock_rounded),
+                          label: const Text('Сменить ключ'),
+                        ),
+                      ],
+                    ),
                   ],
                 ),
               ),

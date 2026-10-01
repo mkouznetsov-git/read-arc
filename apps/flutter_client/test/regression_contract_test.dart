@@ -50,11 +50,43 @@ void main() {
       expect(platformValidator, isNot(contains('find android/app')));
     });
 
+    test('Android backup cannot restore encrypted identity material into a new installation', () {
+      final manifest = _read('android/app/src/main/AndroidManifest.xml');
+      final modernRules = _read('android/app/src/main/res/xml/backup_rules.xml');
+      final legacyRules = _read('android/app/src/main/res/xml/backup_rules_legacy.xml');
+      expect(manifest, contains('android:allowBackup="false"'));
+      expect(manifest, contains('android:dataExtractionRules="@xml/backup_rules"'));
+      expect(manifest, contains('android:fullBackupContent="@xml/backup_rules_legacy"'));
+      for (final rules in [modernRules, legacyRules]) {
+        expect(rules, contains('domain="sharedpref" path="."'));
+        expect(rules, contains('domain="file" path="."'));
+        expect(rules, contains('domain="database" path="."'));
+      }
+      final repository = _read('lib/services/library_repository.dart');
+      expect(repository, contains('resetOnError: false'));
+      expect(repository, contains('SecureStorageUnavailableException'));
+      expect(repository, contains('Preserve it verbatim'));
+    });
+
+    test('empty Android library keeps root controls and reports opaque picker failures', () {
+      final main = _read('lib/app/readarc_app.dart');
+      final importer = _read('lib/services/book_import_service.dart');
+      expect(main, contains("onChooseAgain: _chooseLibraryRoot"));
+      expect(main, contains("label: const Text('Сменить папку')"));
+      expect(main, contains("label: const Text('Добавить книгу')"));
+      expect(main, contains("'Папка: \${root.displayName}'"));
+      expect(main, contains('_friendlyBookImportError(error)'));
+      expect(importer, contains('withReadStream: true'));
+      expect(importer, contains('Выбранный файл недоступен для чтения'));
+      expect(importer, contains('staged.preferredName'));
+    });
+
     test('production package upgrade gates cannot be silently removed', () {
       final gradleProperties = _read('android/gradle.properties');
       final pubspec = _read('pubspec.yaml');
       final lockfile = _read('pubspec.lock');
       final androidPackager = _read('../../scripts/package_android.sh');
+      final macosPackager = _read('../../scripts/package_macos.sh');
       final androidUpgrade = _read('../../scripts/android_upgrade_smoke.sh');
       final androidUpgradeCi = _read('../../scripts/run_android_upgrade_smoke_ci.sh');
       final macosUpgrade = _read('../../scripts/macos_package_upgrade_smoke.sh');
@@ -73,7 +105,15 @@ void main() {
       expect(workflow, contains('Run packaged Android adb install -r upgrade test'));
       expect(workflow, contains('Configure ephemeral Android signing for pull-request verification'));
       expect(workflow, contains('Run packaged macOS clean and legacy-library upgrade test'));
-      expect(pubspec, contains('flutter_secure_storage: 10.3.0'));
+      expect(workflow, contains('READARC_REQUIRE_STABLE_MACOS_SIGNING'));
+      expect(workflow, contains('MACOS_CERTIFICATE_P12_BASE64'));
+      expect(macosPackager, isNot(contains('security delete-generic-password')));
+      expect(macosPackager, contains('stable Developer ID signing identity'));
+      expect(macosPackager, contains('MACOS_SIGNING.txt'));
+      expect(macosPackager, contains('CFBundleShortVersionString'));
+      expect(androidPackager, contains('versionName='));
+      expect(_read('lib/services/library_repository.dart'), contains('usesDataProtectionKeychain: false'));
+      expect(pubspec, contains('flutter_secure_storage: 10.3.4'));
       expect(lockfile, contains('flutter_secure_storage_darwin'));
       expect(lockfile, contains('version: "0.3.2"'));
     });
@@ -84,6 +124,16 @@ void main() {
       expect(main, contains('Показать QR'));
       expect(main, contains('Введите код приглашения'));
       expect(main, contains('Введите код на подключаемом устройстве'));
+    });
+
+    test('cross-platform build identity is visible in the app', () {
+      final buildIdentity = _read('lib/build_identity.dart');
+      final main = _read('lib/app/readarc_app.dart');
+      final workflow = _read('../../.github/workflows/quality_gate.yml');
+      expect(buildIdentity, contains("defaultValue: '0.49.1'"));
+      expect(buildIdentity, contains("'READARC_BUILD_NUMBER'"));
+      expect(main, contains('Версия: \${BuildIdentity.display}'));
+      expect(workflow, contains(r'READARC_BUILD_NUMBER: ${{ github.run_number }}'));
     });
 
     test('library download paths remain guarded by relay connectivity', () {

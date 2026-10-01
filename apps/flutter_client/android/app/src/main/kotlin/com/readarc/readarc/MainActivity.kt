@@ -47,6 +47,17 @@ class MainActivity : FlutterActivity() {
                     result.success(null)
                 }
                 "containsFile" -> result.success(false)
+                "readServiceFile" -> result.success(readServiceFile(rootUri(call), serviceRelative(call)))
+                "listServiceFiles" -> result.success(listServiceFiles(rootUri(call), serviceRelative(call)))
+                "publishServiceFile" -> {
+                    publishServiceFile(
+                        rootUri(call),
+                        serviceRelative(call),
+                        call.argument<ByteArray>("bytes") ?: error("bytes are required"),
+                        call.argument<Boolean>("preservePrevious") != false,
+                    )
+                    result.success(null)
+                }
                 else -> result.notImplemented()
             }
         } catch (error: SecurityException) {
@@ -104,6 +115,23 @@ class MainActivity : FlutterActivity() {
         require(value.isNotEmpty() && !value.startsWith('/') && '\u0000' !in value)
         require(segments.none { it.isEmpty() || it == "." || it == ".." })
         return value
+    }
+
+    private fun serviceRelative(call: MethodCall): String {
+        val value = relative(call)
+        require(value == ".readarc" || value.startsWith(".readarc/")) {
+            "Service location must stay inside .readarc"
+        }
+        return value
+    }
+
+    private fun requireRootAvailable(tree: Uri) {
+        when (rootStatus(tree)) {
+            "available" -> Unit
+            "permissionLost" -> throw SecurityException("Persisted SAF permission was lost")
+            "missing" -> throw java.io.FileNotFoundException("Library root is missing")
+            else -> throw java.io.IOException("Library root is temporarily unavailable")
+        }
     }
 
     private fun rootStatus(tree: Uri): String {
@@ -269,6 +297,176 @@ class MainActivity : FlutterActivity() {
             staged?.let { runCatching { DocumentsContract.deleteDocument(contentResolver, it) } }
         }
     }
+
+
+    private fun readServiceFile(tree: Uri, relative: String): ByteArray? {
+        requireRootAvailable(tree)
+        val uri = resolveDocumentOrNull(tree, relative) ?: return null
+        return contentResolver.openInputStream(uri).use { input ->
+            requireNotNull(input) { "Cannot read service file" }
+            input.readBytes()
+        }
+    }
+
+    private fun listServiceFiles(tree: Uri, relative: String): List<String> {
+        requireRootAvailable(tree)
+        val directory = resolveDocumentOrNull(tree, relative) ?: return emptyList()
+        val type = queryMimeType(directory)
+        if (type != DocumentsContract.Document.MIME_TYPE_DIR) return emptyList()
+        val output = mutableListOf<String>()
+        walkServiceFiles(tree, directory, relative, output)
+        return output.sorted()
+    }
+
+    private fun walkServiceFiles(
+        tree: Uri,
+        parent: Uri,
+        prefix: String,
+        output: MutableList<String>,
+    ) {
+        val children = DocumentsContract.buildChildDocumentsUriUsingTree(
+            tree,
+            DocumentsContract.getDocumentId(parent),
+        )
+        val projection = arrayOf(
+            DocumentsContract.Document.COLUMN_DOCUMENT_ID,
+            DocumentsContract.Document.COLUMN_DISPLAY_NAME,
+            DocumentsContract.Document.COLUMN_MIME_TYPE,
+        )
+        val cursor = contentResolver.query(children, projection, null, null, null)
+            ?: throw java.io.IOException("Document provider returned no service cursor")
+        cursor.use {
+            while (cursor.moveToNext()) {
+                val documentId = cursor.string(DocumentsContract.Document.COLUMN_DOCUMENT_ID)
+                val name = cursor.string(DocumentsContract.Document.COLUMN_DISPLAY_NAME)
+                val mime = cursor.string(DocumentsContract.Document.COLUMN_MIME_TYPE)
+                val childRelative = if (prefix.isEmpty()) name else "$prefix/$name"
+                val uri = DocumentsContract.buildDocumentUriUsingTree(tree, documentId)
+                if (mime == DocumentsContract.Document.MIME_TYPE_DIR) {
+                    walkServiceFiles(tree, uri, childRelative, output)
+                } else {
+                    output += childRelative
+                }
+            }
+        }
+    }
+
+    private fun publishServiceFile(
+        tree: Uri,
+        relative: String,
+        bytes: ByteArray,
+        preservePrevious: Boolean,
+    ) {
+        requireRootAvailable(tree)
+        val segments = relative.split('/')
+        val name = segments.last()
+        val parent = ensureServiceDirectory(tree, segments.dropLast(1))
+        val expected = hashBytes(bytes)
+        val stagedName = "." + name + ".readarc-staging-" + System.nanoTime()
+        var staged = DocumentsContract.createDocument(
+            contentResolver,
+            parent,
+            "application/octet-stream",
+            stagedName,
+        ) ?: throw java.io.IOException("Cannot create service staging file")
+        var previous: Uri? = null
+        var movedCurrent = false
+        var published: Uri? = null
+        try {
+            contentResolver.openOutputStream(staged, "w").use { output ->
+                requireNotNull(output) { "Cannot write service staging file" }
+                output.write(bytes)
+                output.flush()
+            }
+            check(hash(staged) == expected) { "Service staging verification failed" }
+            val current = findChild(tree, parent, name)?.first
+            if (preservePrevious) {
+                findChild(tree, parent, "previous")?.first?.let {
+                    DocumentsContract.deleteDocument(contentResolver, it)
+                }
+                if (current != null) {
+                    previous = DocumentsContract.renameDocument(
+                        contentResolver,
+                        current,
+                        "previous",
+                    ) ?: throw java.io.IOException("Cannot rotate current generation")
+                    movedCurrent = true
+                }
+            } else if (current != null) {
+                throw java.io.IOException("Service file appeared during publish")
+            }
+            published = DocumentsContract.renameDocument(
+                contentResolver,
+                staged,
+                name,
+            ) ?: throw java.io.IOException("Cannot publish service generation")
+            staged = Uri.EMPTY
+            check(hash(published!!) == expected) { "Service publish verification failed" }
+        } catch (error: Throwable) {
+            published?.let { runCatching { DocumentsContract.deleteDocument(contentResolver, it) } }
+            if (movedCurrent) {
+                previous?.let {
+                    runCatching { DocumentsContract.renameDocument(contentResolver, it, name) }
+                }
+            }
+            throw error
+        } finally {
+            if (staged != Uri.EMPTY) {
+                runCatching { DocumentsContract.deleteDocument(contentResolver, staged) }
+            }
+        }
+    }
+
+    private fun ensureServiceDirectory(tree: Uri, segments: List<String>): Uri {
+        require(segments.isNotEmpty() && segments.first() == ".readarc")
+        var current = DocumentsContract.buildDocumentUriUsingTree(
+            tree,
+            DocumentsContract.getTreeDocumentId(tree),
+        )
+        for (segment in segments) {
+            val existing = findChild(tree, current, segment)
+            if (existing != null) {
+                check(existing.second == DocumentsContract.Document.MIME_TYPE_DIR) {
+                    "Service directory collides with a file"
+                }
+                current = existing.first
+            } else {
+                current = DocumentsContract.createDocument(
+                    contentResolver,
+                    current,
+                    DocumentsContract.Document.MIME_TYPE_DIR,
+                    segment,
+                ) ?: throw java.io.IOException("Cannot create service directory")
+            }
+        }
+        return current
+    }
+
+    private fun resolveDocumentOrNull(tree: Uri, relative: String): Uri? {
+        var current = DocumentsContract.buildDocumentUriUsingTree(
+            tree,
+            DocumentsContract.getTreeDocumentId(tree),
+        )
+        for (segment in relative.split('/').filter { it.isNotEmpty() }) {
+            current = findChild(tree, current, segment)?.first ?: return null
+        }
+        return current
+    }
+
+    private fun queryMimeType(uri: Uri): String = contentResolver.query(
+        uri,
+        arrayOf(DocumentsContract.Document.COLUMN_MIME_TYPE),
+        null,
+        null,
+        null,
+    )?.use {
+        if (it.moveToFirst()) it.string(DocumentsContract.Document.COLUMN_MIME_TYPE) else ""
+    } ?: ""
+
+    private fun hashBytes(bytes: ByteArray): String =
+        MessageDigest.getInstance("SHA-256")
+            .digest(bytes)
+            .joinToString("") { "%02x".format(it.toInt() and 0xff) }
 
     private fun hashFile(file: File): String {
         val digest = MessageDigest.getInstance("SHA-256")

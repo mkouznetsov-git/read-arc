@@ -9,6 +9,7 @@ import sys
 import tempfile
 import time
 import unittest
+import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -138,6 +139,53 @@ class RealRelayHarnessTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual("unsupported_protocol_version", error["code"])
         self.assertEqual([2, 3], error["supportedProtocolVersions"])
         await client.close()
+
+    async def test_pairing_start_retry_is_idempotent_and_claim_is_single_use(self) -> None:
+        payload = {
+            "accountId": "pairing-account",
+            "ownerDeviceId": "android-fresh-install",
+            "ownerDeviceName": "Android",
+            "ownerDevicePublicKey": "public-android",
+            "accountEncryptionKey": "secret-not-logged",
+            "relayUrl": f"http://127.0.0.1:{self.port}",
+            "expiresSeconds": 300,
+            "requestId": "stable-request-id",
+        }
+        first = await self._post_json("/pairing/start", payload)
+        retry = await self._post_json("/pairing/start", payload)
+        self.assertEqual(first["code"], retry["code"])
+        self.assertEqual(first["expiresAt"], retry["expiresAt"])
+
+        claim = await self._post_json(
+            "/pairing/claim",
+            {
+                "code": first["code"],
+                "deviceId": "mac-fresh-install",
+                "deviceName": "Mac",
+                "devicePublicKey": "public-mac",
+            },
+        )
+        self.assertTrue(claim["ok"])
+        self.assertEqual("android-fresh-install", claim["ownerDeviceId"])
+        with self.assertRaises(urllib.error.HTTPError) as duplicate_claim:
+            await self._post_json(
+                "/pairing/claim",
+                {"code": first["code"], "deviceId": "second-mac"},
+            )
+        self.assertEqual(404, duplicate_claim.exception.code)
+
+    async def _post_json(self, path: str, payload: dict) -> dict:
+        def send() -> dict:
+            request = urllib.request.Request(
+                f"http://127.0.0.1:{self.port}{path}",
+                data=json.dumps(payload).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(request, timeout=2) as response:
+                return json.loads(response.read())
+
+        return await asyncio.to_thread(send)
 
 
 if __name__ == "__main__":

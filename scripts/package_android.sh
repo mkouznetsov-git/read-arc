@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 APP_DIR="$ROOT_DIR/apps/flutter_client"
 DIST_DIR="$ROOT_DIR/dist/android"
-BASE_VERSION="${READARC_BASE_VERSION:-0.1.0}"
+BASE_VERSION="${READARC_BASE_VERSION:-0.49.1}"
 BUILD_NUMBER="${READARC_BUILD_NUMBER:-${GITHUB_RUN_NUMBER:-}}"
 if [[ -z "$BUILD_NUMBER" ]]; then
   BUILD_NUMBER="$(git -C "$ROOT_DIR" rev-list --count HEAD 2>/dev/null || echo 23)"
@@ -27,6 +27,10 @@ fi
 ANDROID_BUILD_NUMBER="${READARC_ANDROID_BUILD_NUMBER:-$((BUILD_NUMBER + ANDROID_VERSION_CODE_OFFSET))}"
 if [[ ! "$ANDROID_BUILD_NUMBER" =~ ^[0-9]+$ ]]; then
   echo "ERROR: Android version code must be numeric, got: $ANDROID_BUILD_NUMBER" >&2
+  exit 1
+fi
+if (( ANDROID_BUILD_NUMBER < 1 || ANDROID_BUILD_NUMBER > 2100000000 )); then
+  echo "ERROR: Android versionCode must be between 1 and 2100000000, got: $ANDROID_BUILD_NUMBER" >&2
   exit 1
 fi
 
@@ -74,6 +78,8 @@ build_with_optional_define() {
   if [[ -n "$relay_define" ]]; then
     args+=(--dart-define="READARC_DEFAULT_RELAY_URL=$relay_define")
   fi
+  args+=(--dart-define="READARC_BUILD_NAME=$BUILD_NAME")
+  args+=(--dart-define="READARC_BUILD_NUMBER=$BUILD_NUMBER")
   flutter "${args[@]}"
 }
 
@@ -156,6 +162,7 @@ else
     package_line="$($AAPT dump badging "$apk" | head -n 1)"
     package_name="$(sed -n "s/^package: name='\([^']*\)'.*/\1/p" <<< "$package_line")"
     version_code="$(sed -n "s/^package: .* versionCode='\([^']*\)'.*/\1/p" <<< "$package_line")"
+    version_name="$(sed -n "s/^package: .* versionName='\([^']*\)'.*/\1/p" <<< "$package_line")"
     fingerprint="$(sed -n 's/.*certificate SHA-256 digest:[[:space:]]*//p' <<< "$verification" | tr -d '\r' | head -n 1)"
     if [[ "$package_name" != "com.readarc.readarc" ]]; then
       echo "ERROR: unexpected applicationId in $(basename "$apk"): $package_name" >&2
@@ -163,6 +170,10 @@ else
     fi
     if [[ "$version_code" != "$ANDROID_BUILD_NUMBER" ]]; then
       echo "ERROR: unexpected versionCode in $(basename "$apk"): expected=$ANDROID_BUILD_NUMBER actual=$version_code" >&2
+      exit 1
+    fi
+    if [[ "$version_name" != "$BUILD_NAME" ]]; then
+      echo "ERROR: unexpected versionName in $(basename "$apk"): expected=$BUILD_NAME actual=$version_name" >&2
       exit 1
     fi
     if [[ -z "$fingerprint" ]]; then
@@ -179,6 +190,8 @@ else
       echo "file=$(basename "$apk")"
       echo "package=$package_name"
       echo "versionCode=$version_code"
+      echo "versionName=$version_name"
+      echo "displayBuild=$BUILD_NAME ($BUILD_NUMBER)"
       echo "certificateSha256=$fingerprint"
       echo "zipaligned=true"
       echo
