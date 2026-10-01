@@ -80,20 +80,24 @@ Future<_Fixture> _mount(WidgetTester tester, {bool failSecrets = false}) async {
     LibraryRoot(kind: LibraryRootKind.desktopPath, locator: '${directory.path}/second', displayName: 'Second folder'),
   );
   final secrets = _Secrets();
-  final storage = StorageService(
-    appDirectory: () async => Directory('${directory.path}/app'),
-    secretStore: secrets,
-    libraryStorageProvider: provider.storage,
-  );
-  final fixture = _Fixture(directory, provider, storage);
-  await tester.runAsync(() async {
+  // Storage owns an initially pending Future.value() write queue. Construct
+  // and initialize it in the real async zone so runAsync never waits for a
+  // microtask trapped in the widget test's fake clock.
+  final storage = (await tester.runAsync(() async {
+    final storage = StorageService(
+      appDirectory: () async => Directory('${directory.path}/app'),
+      secretStore: secrets,
+      libraryStorageProvider: provider.storage,
+    );
     await Directory('${directory.path}/first').create();
     await Directory('${directory.path}/second').create();
     await storage.configureLibraryRoot(
       LibraryRoot(kind: LibraryRootKind.desktopPath, locator: '${directory.path}/first', displayName: 'First folder'),
     );
-    fixture.originalManifest = await File('${directory.path}/app/manifest.json').readAsString();
-  });
+    return storage;
+  }))!;
+  final fixture = _Fixture(directory, provider, storage);
+  fixture.originalManifest = (await tester.runAsync(() => File('${directory.path}/app/manifest.json').readAsString()))!;
   // Exercise the real PlatformLibrarySecretStore exception translation, too.
   const channel = MethodChannel('plugins.it_nomads.com/flutter_secure_storage');
   final messenger = TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
