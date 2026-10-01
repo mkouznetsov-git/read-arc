@@ -158,7 +158,14 @@ class _Importer extends BookImportService {
   Future<BookRecord?> pickAndImport() async {
     pickCalls++;
     if (failImport) throw PlatformException(code: 'saf_permission', message: 'Java NullPointerException: private path');
-    final book = BookRecord(id: 'book', title: 'Imported book', fileName: 'book.txt', format: 'txt', sizeBytes: 13);
+    final book = BookRecord(
+      id: 'book',
+      title: 'Imported book',
+      fileName: 'book.txt',
+      format: 'txt',
+      sizeBytes: 13,
+      contentSha256: 'book',
+    );
     storage.manifest = storage.manifest.copyWith(books: [book]);
     return book;
   }
